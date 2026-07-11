@@ -7,19 +7,19 @@ default: main
 # Main data connector - all data
 main:
   type: parquet
-  path: data
+  directory: data
 
 # Historical data (2020-2025)
 historical:
   type: parquet
-  path: data/historical
+  directory: data/historical
 
 # Live 2026 data
 live_2026:
   type: parquet
-  path: data/live
+  directory: data/live
 
 # ML predictions
 predictions:
   type: parquet
-  path: data/predictions
+  directory: data/predictions
