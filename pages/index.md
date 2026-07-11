@@ -237,7 +237,7 @@ ORDER BY accuracy DESC NULLS LAST
 
 <Grid cols=2>
 <Counter data={model_performance} column="accuracy" index="0" format="percent" label="Stage Winner Accuracy" />
-<Counter data={model_performance} column="mae" index="1" format="number" label="GC Position MAE" suffix=" places" />
+<Counter data={model_performance} column="rmse" index="1" format="number" label="GC Position RMSE" suffix=" places" />
 </Grid>
 
 <Table data={model_performance} 
@@ -370,13 +370,13 @@ ORDER BY stage, win_probability DESC
 ```sql data_freshness connector=main
 SELECT 
     'ProCyclingStats' as source,
-    current_timestamp() as last_updated,
+    CURRENT_TIMESTAMP as last_updated,
     1260 as record_count,
     0.95 as data_quality_score
 UNION ALL
 SELECT 
     'Cycling Archives' as source,
-    current_timestamp() as last_updated,
+    CURRENT_TIMESTAMP as last_updated,
     1260 as record_count,
     0.92 as data_quality_score
 ORDER BY last_updated DESC
