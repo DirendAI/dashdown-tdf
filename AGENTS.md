@@ -9,7 +9,7 @@
 
 **dashdown-tdf** is an interactive analytics dashboard for the **2026 Tour de France** with:
 
-- **Live data**: Daily updates during the race (July 5-27, 2026)
+- **Live data**: Daily updates during the race (July 4-26, 2026)
 - **ML predictions**: Stage winners, GC contenders, jersey specialists
 - **AI commentary**: Mistral-powered insights baked at build time
 - **Historical analysis**: Compare 2026 to 2020-2025
@@ -32,8 +32,7 @@ pip install -r requirements.txt
 
 # Fetch data and generate predictions
 python scripts/fetch_tdf_data.py --all --output data
-python scripts/train_predictions.py --train
-python scripts/train_predictions.py --predict-all
+python scripts/train_predictions.py --train --predict
 
 # Run the dev server
 dashdown serve .
@@ -58,31 +57,24 @@ dashdown build . --out dist
 dashdown-tdf/
 ├── pages/                    # Dashboard pages (Markdown + SQL)
 │   ├── index.md             # Main dashboard with overview, predictions, analysis
-│   ├── methodology.md        # ML methodology explanation
-│   └── stages/              # Per-stage detail pages (template-based)
-│       └── _template.md     # Template for stage-specific pages
+│   ├── methodology.md        # Data lineage, models, honest CV metrics
+│   └── stages/              # Per-stage detail pages (dynamic route)
+│       └── [stage].md       # /stages/1 … /stages/21 (static_paths export)
 │
-├── data/                    # Data files (Parquet format)
-│   ├── historical/          # 2020-2025 historical results
-│   │   └── results.parquet
-│   ├── live/                # 2026 live data (refreshed daily)
-│   │   ├── gc_standings.parquet
-│   │   ├── stage_results.parquet
-│   │   ├── riders.parquet
-│   │   ├── teams.parquet
-│   │   └── stages.parquet
-│   └── predictions/         # ML-generated predictions
-│       ├── all_stage_predictions.parquet
-│       ├── stage_1_predictions.parquet
-│       └── ...
+├── data/                    # Data files (Parquet format, committed)
+│   ├── race_overview.parquet     # one-row race state (main connector)
+│   ├── model_performance.parquet # honest CV metrics (main connector)
+│   ├── data_freshness.parquet    # source audit (main connector)
+│   ├── historical/          # 2020-2025: results, stages, final_classifications
+│   ├── live/                # 2026: stages, stage_results, gc_standings,
+│   │                        # gc_evolution, classifications, riders, teams,
+│   │                        # rider_profiles (refreshed daily)
+│   └── predictions/         # stage_predictions, gc_forecast, jersey_projections
 │
-├── models/                  # Trained ML models (joblib format)
-│   ├── stage_winner_model.pkl
-│   ├── gc_position_model.pkl
-│   └── ...
+├── models/                  # Trained ML models (joblib, gitignored)
 │
 ├── scripts/                 # Data pipeline and ML scripts
-│   ├── fetch_tdf_data.py    # Fetch data from APIs
+│   ├── fetch_tdf_data.py    # Parse Wikipedia wikitext → parquet
 │   ├── train_predictions.py # Train ML models and generate predictions
 │   └── README.md           # Scripts documentation
 │
@@ -104,22 +96,22 @@ dashdown-tdf/
 
 | Page | Purpose | Key Components |
 |------|---------|----------------|
-| `index.md` | Main dashboard | GC standings, stage predictions, historical comparison, rider analysis |
-| `methodology.md` | ML explanation | Model performance, feature importance, data sources, limitations |
-| `stages/_template.md` | Stage detail | Stage profile, predictions, historical comparison |
+| `index.md` | Main dashboard | GC standings, stage predictions, jersey projections, historical context |
+| `methodology.md` | ML explanation | Model performance (honest CV), data lineage, limitations |
+| `stages/[stage].md` | Stage detail | Result (if raced), GC after the stage, model prediction |
 
 ### Data Flow
 
 ```
-APIs (CQ Ranking, ProCyclingStats, Cycling Archives)
+Wikipedia wikitext (cites letour.fr / Tissot timing)
     ↓
-scripts/fetch_tdf_data.py
+scripts/fetch_tdf_data.py        # {{Cyclingresult}} blocks, stage tables,
+    ↓                            # classifications, startlist → parquet
+data/live/ + data/historical/ + data/race_overview.parquet
     ↓
-data/live/*.parquet
+scripts/train_predictions.py     # LOYO-CV metrics + trained models
     ↓
-scripts/train_predictions.py
-    ↓
-data/predictions/*.parquet + models/*.pkl
+data/predictions/*.parquet + data/model_performance.parquet + models/*.pkl
     ↓
 Dashdown SQL queries (in .md files)
     ↓
@@ -132,24 +124,30 @@ Interactive dashboard
 
 ### Core Tables
 
-| Table | Source | Grain | Key Columns |
-|-------|--------|-------|--------------|
-| `live_2026/gc_standings` | API | 1 row per rider | position, rider, team, time, gap, age, nationality |
-| `live_2026/stage_results` | API | 1 row per rider-stage | stage, position, rider, team, time, gap |
-| `live_2026/riders` | API | 1 row per rider | rider_id, name, team, nationality, age, height, weight, specialist |
-| `live_2026/teams` | API | 1 row per team | team_id, name, country, budget |
-| `live_2026/stages` | API | 1 row per stage | stage, date, start/end_location, distance, elevation, stage_type, climbs |
-| `historical/results` | API | 1 row per rider-stage (2020-2025) | year, stage, position, rider, team, time, gap |
-| `predictions/all_stage_predictions` | ML | 1 row per rider-stage | stage, rider, win_probability, predicted_gc_position, time_gap |
-| `predictions/stage_N_predictions` | ML | 1 row per rider | rider, team, win_probability, predicted_gc_position, ... |
+Connector in parentheses; table name = parquet file stem.
+
+| Table (connector) | Grain | Key Columns |
+|-------------------|-------|--------------|
+| `gc_standings` (live_2026) | 1 row per GC top-10 rider | position, rider, team, nationality, age, time, gap, gap_minutes, gap_seconds |
+| `gc_evolution` (live_2026) | GC top-10 after every completed stage | stage, position, rider, team, gap_seconds |
+| `stage_results` (live_2026) | top-10 per completed stage | stage, position, rider, team, time_raw, gap_seconds, stage_type, distance_km |
+| `stages` (live_2026) | 1 row per stage (all 21) | stage, date, start/end_location, distance_km, stage_type, winner, completed, climbs_* |
+| `classifications` (live_2026) | top-10 of points/mountains/young rider/team | classification, rank, rider, team, points, value |
+| `riders` (live_2026) | full startlist | number, rider, team, country, age, birth_date, status (active/DNS-n/DNF-n) |
+| `rider_profiles` (live_2026) | 1 row per rider | specialist (derived), career_stage_wins, top10_flat/hilly/mountain/individual |
+| `results` (historical) | stage top-10s + GC-after-stage, 2020-2025 | year, stage, record ('stage_result'/'gc_after_stage'), position, rider, team, stage_type |
+| `final_classifications` (historical) | final top-10s per year | year, classification, rank, rider, team, points/gap_seconds |
+| `stage_predictions` (predictions) | 1 row per (remaining stage × active rider) | stage, rider, team, specialist, win_probability, podium_probability, predicted_rank |
+| `gc_forecast` (predictions) | current GC top 10 | rider, current_position, current_gap, predicted_final_position, podium_probability |
+| `jersey_projections` (predictions) | top-30 per jersey | classification, rider, current_points, projected_additional_points, projected_total_points, projected_rank |
+| `race_overview` / `model_performance` / `data_freshness` (main) | one-row/state tables | see files |
 
 ### Key Metrics
 
-- **win_probability**: ML-predicted probability of winning the stage (0-1)
-- **predicted_gc_position**: ML-predicted overall GC position (1-N)
-- **predicted_time_gap_seconds**: ML-predicted time gap to stage winner
-- **is_points_contender**: Binary flag for green jersey contenders
-- **is_mountains_contender**: Binary flag for polka dot jersey contenders
+- **win_probability**: normalised per stage so each stage's probabilities sum to 1
+- **podium_probability**: P(top-3 on the stage) — raw classifier output
+- **predicted_final_position**: rank of the GC position regressor's scores
+- **projected_total_points**: current jersey points + expected finish points
 
 ---
 
@@ -157,28 +155,31 @@ Interactive dashboard
 
 ### Model Types
 
-| Model | Type | Target | Algorithm | Use Case |
-|-------|------|--------|-----------|----------|
-| `stage_winner` | Classification | won_stage (0/1) | RandomForest | Predict stage winners |
-| `gc_position` | Regression | gc_position (1-N) | GradientBoosting | Predict overall GC |
-| `time_gap` | Regression | time_gap_seconds | RandomForest | Predict time differences |
-| `points_jersey` | Classification | is_points_contender (0/1) | RandomForest | Predict green jersey contenders |
-| `mountains_jersey` | Classification | is_mountains_contender (0/1) | RandomForest | Predict KOM jersey contenders |
+| Model | Type | Target | Algorithm |
+|-------|------|--------|-----------|
+| `stage_winner` | Classification | won_stage (0/1) | GradientBoosting |
+| `stage_podium` | Classification | top3_stage (0/1) | GradientBoosting |
+| `gc_position` | Regression | final GC rank of top-10-after-8 | GradientBoosting |
+| `gc_podium` | Classification | final podium (0/1) | RandomForest |
+| jersey projections | Simulation | expected points | models 1+2 × UCI points scales |
+
+Honest leave-one-year-out CV metrics live in `data/model_performance.parquet`
+and are shown on the dashboard — do not replace them with aspirational numbers.
 
 ### Feature Categories
 
-**Rider Features (15+):**
-- Physical: age, height_m, weight_kg, bmi
-- Performance: uci_points, 2026_wins, grand_tour_wins
-- Type: specialist (Sprinter, Climber, Puncheur, All-Rounder, Time Trialist)
+All features derive from the results data itself (no hand-typed rider stats):
 
-**Stage Features (7+):**
-- Profile: distance_km, elevation_m, stage_type
-- Climbs: num_climbs_hc, num_climbs_cat1, num_climbs_cat2
-- Flags: is_mountain_stage, is_tt
+**Career (previous Tours in dataset):** wins, podiums, top-10s by stage type,
+best final GC, plus same-type interaction counts.
 
-**Team Features (1+):**
-- Resources: team_budget_million
+**Form (current Tour, before the predicted stage):** wins, podiums, top-10s by
+type, current GC position, same-type interaction counts.
+
+**Stage:** type one-hots, distance_km, race progress.
+
+**GC models:** current gap/position, remaining mountain stages & ITT km,
+career GC pedigree, mountain form so far.
 
 ---
 
@@ -200,8 +201,8 @@ title: New Analysis
 
 # My Analysis
 
-```sql my_data connector=main
-SELECT * FROM live_2026/gc_standings LIMIT 10
+```sql my_data connector=live_2026
+SELECT * FROM gc_standings LIMIT 10
 ```
 
 <BarChart data={my_data} x="rider" y="gap" title="GC Gaps" />
@@ -308,46 +309,52 @@ Use `color="team"` to color charts by team.
 
 ### SQL Syntax
 
-Dashdown uses **DuckDB SQL** with some extensions:
+Dashdown uses **DuckDB SQL**. The connector is chosen in the query's info
+string (` ```sql name connector=predictions `), and each parquet file in that
+connector's directory is a table named after the file stem:
 
-```sql
--- Basic query
-SELECT rider, team, win_probability 
-FROM predictions/all_stage_predictions 
-WHERE stage = 15 
+````markdown
+```sql stage15_favorites connector=predictions
+SELECT rider, team, win_probability
+FROM stage_predictions
+WHERE stage = 15
 ORDER BY win_probability DESC
 LIMIT 10
+```
+````
 
--- Aggregation
-SELECT 
-    specialist,
-    COUNT(*) as num_riders,
-    AVG(win_probability) as avg_prob
-FROM predictions/all_stage_predictions
+```sql
+-- Aggregation (connector=predictions)
+SELECT specialist,
+       COUNT(*) AS num_riders,
+       AVG(win_probability) AS avg_prob
+FROM stage_predictions
 GROUP BY specialist
 ORDER BY avg_prob DESC
 
--- Filtering
-SELECT * 
-FROM live_2026/stages 
-WHERE stage_type = 'Mountain' 
-  AND elevation_m > 3000
-
--- Date functions
-SELECT * 
-FROM live_2026/stages 
-WHERE date >= current_date()
+-- Filtering (connector=live_2026)
+SELECT *
+FROM stages
+WHERE stage_type = 'Mountain' AND completed
 ```
+
+Cross-connector joins are not possible — each connector is its own DuckDB.
+The prediction parquets are denormalised (they carry team/specialist/age) for
+exactly this reason.
 
 ### Parameterized Queries
 
-Use `${param}` syntax for dynamic values:
+Route params from dynamic pages (`pages/stages/[stage].md`) reach SQL as
+`${stage}`. Values are substituted as quoted string literals (injection-safe),
+so cast explicitly for numeric comparisons:
 
 ```sql
-SELECT * FROM predictions/stage_${stage}_predictions
+SELECT * FROM stage_predictions
+WHERE stage = CAST('${stage}' AS INTEGER)
 ```
 
-In page templates, use `{{variable}}` syntax (Dashdown templating).
+Page **prose is not templated** — to show a value in a sentence, use
+`<Value data={query} column="col" />`, never `{{...}}` placeholders.
 
 ---
 
@@ -360,7 +367,7 @@ In page templates, use `{{variable}}` syntax (Dashdown templating).
 dashdown check
 
 # Verify SQL queries
-dashdown query "SELECT COUNT(*) FROM live_2026/gc_standings"
+dashdown query "SELECT COUNT(*) FROM gc_standings" --connector live_2026
 
 # Take screenshot to verify charts draw
 dashdown screenshot / --full-page -o test.png
@@ -415,11 +422,12 @@ gh workflow run deploy.yml
 
 ### External Resources
 
-- [CQ Ranking API](https://cqranking.com/api/) — Primary data source
-- [ProCyclingStats](https://www.procyclingstats.com) — Race data
-- [Cycling Archives](https://www.cyclingarchives.com) — Historical results
-- [UCI](https://www.uci.org) — Rider/team information
-- [Tour de France Official](https://www.letour.fr) — Route and stage details
+- [Wikipedia: 2026 Tour de France](https://en.wikipedia.org/wiki/2026_Tour_de_France) — primary data source (parsed wikitext)
+- [Tour de France Official](https://www.letour.fr) — the timing Wikipedia cites
+- [UCI](https://www.uci.org) — rider/team information
+
+Note: `cqranking.com` has no public JSON API and `procyclingstats.com` blocks
+automated clients (HTTP 403) — do not point the fetch script back at them.
 
 ---
 
@@ -429,7 +437,7 @@ gh workflow run deploy.yml
 A: Add a SQL query block, then reference it in a component: `<BarChart data={my_query} x="col1" y="col2" />`
 
 **Q: How do I use the ML models?**
-A: Models are pre-trained. Use `scripts/train_predictions.py --predict-all` to generate predictions.
+A: Models are pre-trained. Run `python scripts/train_predictions.py --train --predict` to retrain and regenerate predictions.
 
 **Q: How do I add AI commentary?**
 A: Add `<Ask data={query} ask="Your question here" />` to any page. Requires `MISTRAL_API_KEY`.

@@ -1,17 +1,13 @@
 {
-  "last_refreshed": "2026-07-11T17:46:23Z",
-  "data_sources": [
-    "CQ Ranking API",
-    "ProCyclingStats",
-    "Cycling Archives"
-  ],
-  "refresh_interval": "daily",
-  "next_refresh": "2026-07-12T08:00:00Z",
-  "current_stage": 12,
+  "last_refreshed": "2026-07-11T18:26:34+00:00",
+  "data_source": "Wikipedia (en) \u2014 parsed wikitext, cites letour.fr / Tissot Timing",
+  "refresh_interval": "daily during the race",
+  "current_stage_completed": 8,
+  "next_stage": 9,
   "total_stages": 21,
-  "note": "Live data - Tour de France 2026 Stage 12 completed",
-  "yellow_jersey": "Tadej Pogacar",
-  "green_jersey": "Jasper Philipsen",
-  "polka_dot_jersey": "Tadej Pogacar",
-  "best_young_rider": "Emils Hindegaard"
+  "yellow_jersey": "Tadej Poga\u010dar",
+  "green_jersey": "Mads Pedersen",
+  "polka_dot_jersey": "Tadej Poga\u010dar",
+  "white_jersey": "Isaac del Toro",
+  "note": "Live data - Tour de France 2026, stage 8 completed"
 }

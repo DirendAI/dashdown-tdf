@@ -78,3 +78,5 @@ logs/
 !data/race_overview.parquet
 !data/feature_importance.parquet
 !data/model_performance.parquet
+# Trained model artifacts (retrained daily in CI; reproducible from data/)
+models/
