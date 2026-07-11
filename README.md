@@ -1,342 +1,209 @@
-# 🚴 TDF 2026 × ML
+# 🚧 TDF 2026 × ML - Dashboard Template
 
-**Live Tour de France 2026 Dashboard with Machine Learning Predictions & AI Commentary**
+**Template for a Tour de France 2026 Dashboard with Machine Learning Predictions & AI Commentary**
 
 [![CI](https://github.com/DirendAI/dashdown-tdf/actions/workflows/deploy.yml/badge.svg)](https://github.com/DirendAI/dashdown-tdf/actions/workflows/deploy.yml)
-[![Daily Refresh](https://github.com/DirendAI/dashdown-tdf/actions/workflows/daily-refresh.yml/badge.svg)](https://github.com/DirendAI/dashdown-tdf/actions/workflows/daily-refresh.yml)
 [![Dashdown](https://img.shields.io/badge/built%20with-Dashdown-000000.svg)](https://github.com/DirendAI/dashdown)
 [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
 ---
 
-**📊 Live Dashboard**: [https://direndai.github.io/dashdown-tdf/](https://direndai.github.io/dashdown-tdf/)
+**⚠️ NOTE**: This is a **template/demo project** that demonstrates Dashdown's capabilities. 
+**It does not currently have real live data.** To use it with real data, you need to:
 
-*Updated daily at 08:00 UTC during the Tour de France (July 5-27, 2026)*
+1. Set up API access to data sources (CQ Ranking, ProCyclingStats, etc.)
+2. Run `python scripts/fetch_tdf_data.py` to fetch real data
+3. Configure the data connectors in `sources.yaml`
 
 ---
 
-## 🎯 What This Is
+## 📋 What This Template Shows
 
-An **interactive analytics dashboard** for the **2026 Tour de France** that combines:
+This repository demonstrates how to build an **interactive analytics dashboard** for the Tour de France that would combine:
 
-- ✅ **Live race data** - GC standings, stage results, rider info (from REAL sources)
-- ✅ **ML-powered predictions** - Stage winners, GC contenders, jersey specialists
-- ✅ **AI-generated commentary** - Mistral-powered insights baked at build time
-- ✅ **Historical analysis** - Compare 2026 to 2020-2025 (REAL data)
-- ✅ **Interactive visualizations** - Charts, tables, and filters
+- **Live race data** - GC standings, stage results, rider info
+- **ML-powered predictions** - Stage winners, GC contenders, jersey specialists  
+- **AI-generated commentary** - Mistral-powered insights baked at build time
+- **Historical analysis** - Compare current year to previous years
+- **Interactive visualizations** - Charts, tables, and filters
 
 All built with **[Dashdown](https://github.com/DirendAI/dashdown)** — a tool that turns Markdown + SQL into interactive dashboards.
 
 ---
 
-## 🏆 Features
+## 🚀 Quick Start (With Real Data)
 
-### 📊 Live Race Data (REAL SOURCES)
-- **General Classification standings** with time gaps (from CQ Ranking API)
-- **Stage-by-stage results** for all 21 stages (from CQ Ranking API)
-- **Rider profiles** with age, nationality, team (from CQ Ranking API)
-- **Team information** with country codes (from CQ Ranking API)
-- **Stage profiles** with distance, type, date (from CQ Ranking API)
+### Prerequisites
 
-### 🤖 Machine Learning Predictions
-- **Stage winner probabilities** for every stage
-- **GC position predictions** for overall standings
-- **Time gap estimates** between riders
-- **Jersey contender identification** (Points & Mountains)
-- **Specialist analysis** (Sprinters, Climbers, Puncheurs, etc.)
+1. **API Access**: You need access to cycling data APIs:
+   - [CQ Ranking API](https://cqranking.com/api/) (free, but check current endpoints)
+   - [ProCyclingStats](https://www.procyclingstats.com) (may require permission)
+   - [Cycling Archives](https://www.cyclingarchives.com)
 
-### ✨ AI-Powered Insights
-- **Automated commentary** on race dynamics
-- **Chart explanations** with annotated insights
-- **Natural language analysis** of predictions
+2. **Update the fetch script**: The `scripts/fetch_tdf_data.py` script needs to be updated with current API endpoints.
 
-### 📈 Historical Comparison
-- **2026 vs 2020-2025** performance trends
-- **Year-over-year** improvements/declines
-- **Career trajectory** analysis for top riders
-
-### 🔄 Daily Updates
-- **Automatic refresh** at 08:00 UTC during TDF
-- **CI/CD pipeline** with quality gates
-- **GitHub Pages deployment** for live dashboard
-
----
-
-## 🚀 Quick Start
-
-### Local Development
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/DirendAI/dashdown-tdf.git
-   cd dashdown-tdf
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Set up Mistral API key (optional):**
-   ```bash
-   export MISTRAL_API_KEY="your-api-key"
-   ```
-
-4. **Run the dashboard locally:**
-   ```bash
-   dashdown serve .
-   ```
-   Open [http://localhost:8080](http://localhost:8080) in your browser.
-
-### Production Build
+### Setup
 
 ```bash
-# Build static site
-dashdown build . --out dist
+# Clone the repository
+git clone https://github.com/DirendAI/dashdown-tdf.git
+cd dashdown-tdf
 
-# Serve locally for testing
-python -m http.server 8000 --directory dist
+# Install dependencies
+pip install -r requirements.txt
+
+# Fetch real data (after updating the script with working API endpoints)
+python scripts/fetch_tdf_data.py --year 2026 --output data
+
+# Or fetch historical data for testing
+python scripts/fetch_tdf_data.py --historical --output data
+
+# Run the dashboard locally
+dashdown serve .
 ```
 
+Open [http://localhost:8000](http://localhost:8000) in your browser.
+
 ---
 
-## 📁 Project Structure
+## 📊 Dashboard Features (When Data is Available)
+
+### Pages
+
+- **Home** (`pages/index.md`) - Main dashboard with GC standings, predictions, and analysis
+- **Methodology** (`pages/methodology.md`) - ML model explanations and performance metrics
+- **Stage Details** (`pages/stages/_template.md`) - Template for individual stage pages
+
+### Data Model
+
+The dashboard expects data in Parquet format under `data/`:
 
 ```
-dashdown-tdf/
-├── .github/
-│   └── workflows/
-│       ├── daily-refresh.yml    # Daily data refresh during TDF
-│       └── deploy.yml           # Build and deploy to GitHub Pages
-├── assets/
-│   └── favicon.svg             # TDF-themed favicon
-├── data/
-│   ├── historical/             # 2020-2025 historical data
-│   │   └── results.parquet
-│   ├── live/                   # 2026 live race data
-│   │   ├── gc_standings.parquet
-│   │   ├── riders.parquet
-│   │   ├── stage_results.parquet
-│   │   ├── stages.parquet
-│   │   └── teams.parquet
-│   ├── metadata.json           # Data freshness info
-│   ├── model_performance.parquet
-│   ├── predictions/            # ML-generated predictions
-│   │   ├── all_stage_predictions.parquet
-│   │   ├── stage_1_predictions.parquet
-│   │   └── ...
-│   ├── race_overview.parquet
-│   └── feature_importance.parquet
-├── pages/
-│   ├── index.md                # Main dashboard
-│   ├── methodology.md          # ML methodology explanation
-│   └── stages/
-│       └── _template.md        # Stage detail template
-├── scripts/
-│   ├── fetch_tdf_data.py       # Data collection from APIs
-│   ├── train_predictions.py    # ML model training and prediction
-│   ├── generate_sample_data.py # Sample data generator (dev only)
-│   └── README.md              # Scripts documentation
-├── .gitignore
-├── AGENTS.md                  # Agent guide for contributors
-├── dashdown.yaml              # Dashdown configuration
-├── PROJECT_SUMMARY.md         # Project overview
-├── README.md                  # This file
-└── requirements.txt           # Python dependencies
+data/
+├── live/
+│   ├── gc_standings.parquet      # Current GC standings
+│   ├── stage_results.parquet     # Stage results
+│   ├── riders.parquet            # Rider information
+│   ├── teams.parquet             # Team information
+│   └── stages.parquet            # Stage profiles
+├── predictions/
+│   ├── all_stage_predictions.parquet  # All predictions
+│   └── stage_*.parquet           # Per-stage predictions
+├── historical/
+│   └── results.parquet          # Historical results (2020-2025)
+└── metadata.json                # Data freshness info
 ```
 
----
+### ML Models
 
-## 🤖 ML Models
-
-We train **5 machine learning models** on historical Tour de France data (2020-2025):
-
-| Model | Type | Purpose | Features | Expected Accuracy |
-|-------|------|---------|----------|-------------------|
-| `stage_winner` | RandomForestClassifier | Predict stage winner | 16 | 85-90% |
-| `gc_position` | GradientBoostingRegressor | Predict overall GC position | 16 | 88-93% |
-| `time_gap` | RandomForestRegressor | Predict time gap (seconds) | 16 | 82-87% |
-| `points_jersey` | RandomForestClassifier | Predict green jersey contenders | 16 | 84-89% |
-| `mountains_jersey` | RandomForestClassifier | Predict polka dot jersey contenders | 16 | 83-88% |
-
-### Features Used (16 total)
-- Rider: age, weight, height, UCI points, nationality, team strength
-- Stage: distance, elevation gain, stage type, terrain difficulty
-- Historical: career stage wins, TDF appearances, previous GC positions
-- Team: team budget, team size, team average age
-
----
-
-## 🔄 Daily Update Pipeline
-
-During the Tour de France (July 5-27, 2026), the dashboard **automatically refreshes** every day at 08:00 UTC:
-
-1. **Fetch latest data** from CQ Ranking API
-2. **Retrain ML models** with new 2026 data
-3. **Generate fresh predictions** for upcoming stages
-4. **Rebuild dashboard** with updated content
-5. **Deploy to GitHub Pages** for live viewing
-
-The entire pipeline runs in **~15-20 minutes** and includes quality gates to ensure data validity.
-
----
-
-## 📊 Dashboard Pages
-
-### 🏠 Home (`pages/index.md`)
-- **Race Overview**: Current GC standings, stage winners, key statistics
-- **Live Predictions**: Today's stage winner probabilities
-- **Historical Comparison**: 2026 vs 2020-2025 performance
-- **Jersey Competitions**: Points, Mountains, and Young Rider standings
-- **Model Performance**: Accuracy metrics and feature importance
-- **Rider Analysis**: Scatter plots, correlation analysis
-- **Stage Breakdown**: Detailed table of all 21 stages
-- **AI Commentary**: 5 `<Ask>` components with Mistral-generated insights
-
-### 📚 Methodology (`pages/methodology.md`)
-- **Model Overview**: Architecture and training process
-- **Performance Metrics**: Validation results and accuracy scores
-- **Feature Importance**: What matters most in predictions
-- **Data Sources**: Where our data comes from
-- **Training Process**: How models are trained and validated
-- **Limitations**: Known constraints and future improvements
-- **Technical Stack**: Tools and technologies used
-- **AI Commentary**: 2 `<Ask>` components explaining the methodology
-
-### 🏁 Stage Details (`pages/stages/_template.md`)
-Template for individual stage pages with:
-- Stage profile and elevation chart
-- Winner predictions with confidence scores
-- Rider deep dive for top contenders
-- Historical comparison for the stage
-- Team breakdown and analysis
-- 3 `<Ask>` components for stage-specific insights
+The template includes placeholders for 5 ML models:
+- Stage winner prediction (Random Forest)
+- GC position prediction (Gradient Boosting)
+- Time gap prediction (Random Forest)
+- Points jersey contender prediction (Random Forest)
+- Mountains jersey contender prediction (Random Forest)
 
 ---
 
 ## 🔧 Configuration
 
-### Dashdown Configuration (`dashdown.yaml`)
+### Data Connectors (`sources.yaml`)
+
 ```yaml
-# TDF-themed colors
-palette:
-  primary: '#FFD700'  # Yellow jersey
-  secondary: '#00A651'  # Green jersey
-  accent: '#EF3340'  # Red (Points jersey)
-  background: '#FFFFFF'
-  text: '#1a1a1a'
+default: main
+
+main:
+  type: parquet
+  directory: data
+
+live_2026:
+  type: parquet
+  directory: data/live
+
+predictions:
+  type: parquet
+  directory: data/predictions
+
+historical:
+  type: parquet
+  directory: data/historical
+```
+
+### Dashdown Config (`dashdown.yaml`)
+
+```yaml
+title: "TDF 2026 Analytics Dashboard"
+description: "Live Tour de France 2026 dashboard with ML predictions"
+agents: [mistral]
 
 # Mistral API for AI commentary
 llm:
   provider: mistral
   model: mistral-medium-latest
   api_key: ${MISTRAL_API_KEY}
-```
 
-### Data Sources (`sources.yaml`)
-```yaml
-connectors:
-  main:
-    type: parquet
-    path: data
-  historical:
-    type: parquet
-    path: data/historical
-  live_2026:
-    type: parquet
-    path: data/live
-  predictions:
-    type: parquet
-    path: data/predictions
+palette:
+  primary: '#FFD700'    # Yellow jersey
+  secondary: '#00A651'  # Green jersey
+  accent: '#EF3340'     # Red (Points jersey)
 ```
 
 ---
 
-## 🛠️ Dependencies
+## 🤖 AI Commentary
 
-### Python Packages (`requirements.txt`)
-```
-dashdown-md[mistral,pdf,python,semantic]==0.1.14
-pandas>=2.0.0
-numpy>=1.24.0
-pyarrow>=14.0.0
-duckdb>=0.10.0
-scikit-learn>=1.3.0
-xgboost>=2.0.0
-joblib>=1.3.0
-httpx>=0.25.0
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
+The dashboard uses Mistral AI to generate insights. Set the API key:
+
+```bash
+export MISTRAL_API_KEY="your-api-key"
+dashdown build . --out dist
 ```
 
----
-
-## 📡 Data Sources
-
-### Primary: CQ Ranking API
-- **Website**: [https://cqranking.com](https://cqranking.com)
-- **API**: [https://cqranking.com/api/v1/](https://cqranking.com/api/v1/)
-- **Endpoints Used**:
-  - `/races` - List all races
-  - `/races/{id}/stages` - Get stages for a race
-  - `/stages/{id}/results` - Get results for a stage
-- **Rate Limit**: 0.5s delay between requests (respectful crawling)
-- **Authentication**: None (public API)
-
-### Fallback: ProCyclingStats
-- **Website**: [https://www.procyclingstats.com](https://www.procyclingstats.com)
-- **Method**: Web scraping with BeautifulSoup
-- **Status**: Placeholder implementation (not yet active)
-
-### Fallback: Cycling Archives
-- **Website**: [https://www.cyclingarchives.com](https://www.cyclingarchives.com)
-- **Method**: Web scraping with BeautifulSoup
-- **Status**: Placeholder implementation (not yet active)
+Without an API key, `<Ask>` components will show placeholder messages.
 
 ---
 
-## 🤝 Contributing
+## 📚 Project Structure
 
-### Adding New Features
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Test locally (`dashdown serve .`)
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-### Data Contributions
-- New data sources are welcome!
-- Please ensure data is from **public, legal sources**
-- Include proper attribution in the data files
-- Update `scripts/fetch_tdf_data.py` to fetch from the new source
-
-### ML Model Improvements
-- New models should be added to `scripts/train_predictions.py`
-- Include validation metrics and feature importance
-- Update `pages/methodology.md` with model documentation
+```
+dashdown-tdf/
+├── pages/                    # Dashboard pages (Markdown + SQL)
+│   ├── index.md             # Main dashboard
+│   ├── methodology.md       # ML methodology
+│   └── stages/              # Stage detail pages
+│       └── _template.md     # Stage template
+├── scripts/                 # Data pipeline
+│   ├── fetch_tdf_data.py    # Fetch real data (needs API updates)
+│   ├── train_predictions.py # Train ML models
+│   └── generate_sample_data.py # Generate test data
+├── data/                    # Data files (Parquet)
+├── dashdown.yaml            # Dashdown configuration
+├── sources.yaml             # Data source configuration
+└── .vibe/                   # Mistral/Vibe agent support
+```
 
 ---
 
-## 📜 License
+## 🎯 Next Steps to Make This Real
 
-This project is licensed under the **AGPL-3.0-or-later** license - see the [LICENSE](LICENSE) file for details.
+1. **Update `scripts/fetch_tdf_data.py`** with current API endpoints
+2. **Get API keys/access** for cycling data sources
+3. **Run the fetch script** to populate `data/` with real data
+4. **Train the ML models** with historical data
+5. **Generate predictions** for the current race
+6. **Deploy** to GitHub Pages or your own hosting
+
+---
+
+## 📄 License
+
+AGPL-3.0-or-later — see [LICENSE](LICENSE) for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
-- **[Dashdown](https://github.com/DirendAI/dashdown)** - The framework that makes this possible
-- **[CQ Ranking](https://cqranking.com)** - Primary data source
-- **[Mistral AI](https://mistral.ai)** - AI commentary provider
-- **[scikit-learn](https://scikit-learn.org)** - ML library
-- **[GitHub Actions](https://github.com/features/actions)** - CI/CD pipeline
-
----
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/DirendAI/dashdown-tdf/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/DirendAI/dashdown-tdf/discussions)
-- **Documentation**: [Dashdown Docs](https://github.com/DirendAI/dashdown)
+- [Dashdown](https://github.com/DirendAI/dashdown) - The framework
+- [CQ Ranking](https://cqranking.com) - Primary data source (API needs updating)
+- [Mistral AI](https://mistral.ai) - AI commentary
+- [scikit-learn](https://scikit-learn.org) - ML library

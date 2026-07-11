@@ -1,8 +1,9 @@
 {
-  "last_refreshed": "2026-07-11T17:33:00Z",
+  "last_refreshed": "2026-07-11T17:46:23Z",
   "data_sources": [
     "CQ Ranking API",
-    "ProCyclingStats"
+    "ProCyclingStats",
+    "Cycling Archives"
   ],
   "refresh_interval": "daily",
   "next_refresh": "2026-07-12T08:00:00Z",
@@ -11,5 +12,6 @@
   "note": "Live data - Tour de France 2026 Stage 12 completed",
   "yellow_jersey": "Tadej Pogacar",
   "green_jersey": "Jasper Philipsen",
-  "polka_dot_jersey": "Jonas Vingegaard"
+  "polka_dot_jersey": "Tadej Pogacar",
+  "best_young_rider": "Emils Hindegaard"
 }
