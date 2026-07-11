@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """
-Train ML models for Tour de France predictions.
+Train ML models on real Tour de France results (2020-2025) and generate
+predictions for the remaining stages of the 2026 race.
 
-This script trains models to predict:
-1. Stage winners based on rider characteristics and stage profile
-2. General Classification (GC) contenders
-3. Points jersey contenders
-4. Mountains jersey contenders
+Everything here is derived from the data written by fetch_tdf_data.py — no
+hand-typed rider stats. Models are evaluated with leave-one-year-out cross
+validation and the honest scores are published to the dashboard
+(data/model_performance.parquet).
 
-Models are saved and can be used to generate predictions for 2026 stages.
+Models
+------
+1. stage_winner   GradientBoostingClassifier  P(rider wins a given stage)
+2. stage_podium   GradientBoostingClassifier  P(rider finishes top-3 on stage)
+3. gc_position    GradientBoostingRegressor   final GC position for riders
+                                              in the GC top 10 after stage 8
+4. gc_podium      RandomForestClassifier      P(final GC podium) same input
+5. green/polka    projection                  expected remaining finish points
+                                              from models 1+2, added to current
+                                              standings
 
-Usage:
-    python scripts/train_predictions.py --train
-    python scripts/train_predictions.py --predict --stage 15
-    python scripts/train_predictions.py --predict-all
+Usage
+-----
+    python scripts/train_predictions.py --train --predict
+    python scripts/train_predictions.py --train            # models + metrics
+    python scripts/train_predictions.py --predict          # needs models/
 """
 
+from __future__ import annotations
+
 import argparse
-import json
-import os
-import pickle
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -31,501 +40,623 @@ from sklearn.ensemble import (
     GradientBoostingClassifier,
     GradientBoostingRegressor,
     RandomForestClassifier,
-    RandomForestRegressor,
 )
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
+    log_loss,
     mean_absolute_error,
-    mean_squared_error,
     r2_score,
+    roc_auc_score,
 )
 
+RANDOM_STATE = 42
+CURRENT_YEAR = 2026
+PIVOT_STAGE = 8  # stage after which the GC models are anchored
 
-class TDFPredictor:
-    """ML models for Tour de France predictions."""
-    
-    def __init__(self, data_dir: Path = Path("data")):
+STAGE_TYPES = ["Flat", "Hilly", "Mountain", "Individual time trial"]
+
+# Real UCI points scales for the Tour de France points classification
+FINISH_POINTS = {
+    "Flat":                  [50, 30, 20, 18, 16, 14, 12, 10, 8, 7, 6, 5, 4, 3, 2],
+    "Hilly":                 [30, 25, 22, 19, 17, 15, 13, 11, 9, 7, 6, 5, 4, 3, 2],
+    "Mountain":              [20, 17, 15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    "Individual time trial": [20, 17, 15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+}
+# Rough KOM points available to the winner of a mountain stage (summit finishes
+# at HC/Cat-1 climbs award 20/10 to the first rider over)
+KOM_WIN_POINTS = {"Mountain": 18.0, "Hilly": 4.0}
+
+
+# ----------------------------------------------------------------------------
+# Data loading
+# ----------------------------------------------------------------------------
+
+class TDFData:
+    def __init__(self, data_dir: Path):
         self.data_dir = data_dir
-        self.models_dir = Path("models")
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Feature engineering parameters
-        self.stage_type_order = {"Flat": 0, "Hilly": 1, "Mountain": 2, "Prologue": 3, "Individual Time Trial": 4}
-        self.specialist_order = {"Sprinter": 0, "Lead-out": 1, "Puncheur": 2, "All-Rounder": 3, "Climber": 4}
-        
-        # Models
-        self.models = {
-            "stage_winner": None,
-            "gc_position": None,
-            "points_jersey": None,
-            "mountains_jersey": None,
-            "time_gap": None,
-        }
-        
-        # Feature columns
-        self.rider_features = [
-            "age", "height_m", "weight_kg", "uci_points", "2026_wins", 
-            "grand_tour_wins", "bmi"
-        ]
-        self.stage_features = [
-            "distance_km", "elevation_m", "is_mountain_stage", "is_tt",
-            "num_climbs_hc", "num_climbs_cat1", "num_climbs_cat2"
-        ]
-        self.team_features = ["team_budget_million"]
-        
-        # Target columns
-        self.targets = {
-            "stage_winner": "won_stage",
-            "gc_position": "gc_position",
-            "points_jersey": "points_jersey_contender",
-            "mountains_jersey": "mountains_jersey_contender",
-            "time_gap": "time_gap_seconds",
-        }
-    
-    def load_data(self) -> Dict[str, pd.DataFrame]:
-        """Load training data from parquet files."""
-        data = {}
-        
-        # Load historical results
-        historical_path = self.data_dir / "historical" / "results.parquet"
-        if historical_path.exists():
-            data["historical"] = pd.read_parquet(historical_path)
-        
-        # Load 2026 data
-        live_dir = self.data_dir / "live"
-        if live_dir.exists():
-            for file in live_dir.glob("*.parquet"):
-                name = file.stem
-                data[name] = pd.read_parquet(file)
-        
-        return data
-    
-    def prepare_training_data(self, data: Dict[str, pd.DataFrame]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-        """Prepare training data with feature engineering."""
-        if "historical" not in data:
-            raise ValueError("Historical data not found")
-        
-        df = data["historical"].copy()
-        
-        # Add rider features (mock for now - in production, join with rider table)
-        rider_stats = {
-            "Jonas Vingegaard": {"age": 27, "height_m": 1.75, "weight_kg": 62, "uci_points": 4500, 
-                               "2026_wins": 5, "grand_tour_wins": 3},
-            "Tadej Pogacar": {"age": 25, "height_m": 1.76, "weight_kg": 58, "uci_points": 4800,
-                              "2026_wins": 8, "grand_tour_wins": 3},
-            "Adam Yates": {"age": 31, "height_m": 1.74, "weight_kg": 58, "uci_points": 3500,
-                          "2026_wins": 3, "grand_tour_wins": 1},
-            "Wout van Aert": {"age": 29, "height_m": 1.87, "weight_kg": 78, "uci_points": 4200,
-                             "2026_wins": 10, "grand_tour_wins": 0},
-            "Remco Evenepoel": {"age": 24, "height_m": 1.72, "weight_kg": 60, "uci_points": 4000,
-                                "2026_wins": 6, "grand_tour_wins": 1},
-        }
-        
-        for rider, stats in rider_stats.items():
-            mask = df["rider"] == rider
-            for key, value in stats.items():
-                df.loc[mask, key] = value
-        
-        # Calculate BMI
-        df["bmi"] = df["weight_kg"] / (df["height_m"] ** 2)
-        
-        # Add stage features
-        stage_profiles = {
-            1: {"distance_km": 8.0, "elevation_m": 50, "is_mountain_stage": False, 
-                "is_tt": True, "num_climbs_hc": 0, "num_climbs_cat1": 0, "num_climbs_cat2": 0},
-            5: {"distance_km": 160, "elevation_m": 3500, "is_mountain_stage": True,
-                "is_tt": False, "num_climbs_hc": 2, "num_climbs_cat1": 0, "num_climbs_cat2": 1},
-            10: {"distance_km": 180, "elevation_m": 4000, "is_mountain_stage": True,
-                 "is_tt": False, "num_climbs_hc": 1, "num_climbs_cat1": 1, "num_climbs_cat2": 0},
-            15: {"distance_km": 170, "elevation_m": 4500, "is_mountain_stage": True,
-                 "is_tt": False, "num_climbs_hc": 2, "num_climbs_cat1": 1, "num_climbs_cat2": 0},
-            20: {"distance_km": 34, "elevation_m": 200, "is_mountain_stage": False,
-                 "is_tt": True, "num_climbs_hc": 0, "num_climbs_cat1": 0, "num_climbs_cat2": 0},
-        }
-        
-        for stage, profile in stage_profiles.items():
-            mask = df["stage"] == stage
-            for key, value in profile.items():
-                df.loc[mask, key] = value
-        
-        # Fill missing stage profiles with defaults
-        for col in self.stage_features:
-            if col not in df.columns:
-                df[col] = 0
-            df[col].fillna(0, inplace=True)
-        
-        # Add team features
-        team_budgets = {
-            "Team Visma | Lease a Bike": 45,
-            "UAE Team Emirates": 50,
-            "Soudal Quick-Step": 40,
-        }
-        df["team_budget_million"] = df["team"].map(team_budgets).fillna(30)
-        
-        # Create target: won_stage (1 if position == 1, else 0)
-        df["won_stage"] = (df["position"] == 1).astype(int)
-        
-        # Create target: gc_position (for GC prediction)
-        # This would come from overall GC standings in real data
-        gc_positions = {
-            "Jonas Vingegaard": 1,
-            "Tadej Pogacar": 2,
-            "Adam Yates": 3,
-            "Wout van Aert": 4,
-            "Remco Evenepoel": 5,
-        }
-        df["gc_position"] = df["rider"].map(gc_positions).fillna(10)
-        
-        # Create target: time_gap_seconds
-        # Parse time gap and convert to seconds
-        def parse_gap(gap_str):
-            if gap_str == "0" or pd.isna(gap_str):
-                return 0
-            if ":" in gap_str:
-                parts = gap_str.replace("+", "").split(":")
-                if len(parts) == 2:
-                    return int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-            return 0
-        
-        df["time_gap_seconds"] = df["gap"].apply(parse_gap)
-        
-        # Create specialist features
-        specialist_map = {
-            "Jonas Vingegaard": "Climber",
-            "Tadej Pogacar": "Climber",
-            "Adam Yates": "Climber",
-            "Wout van Aert": "All-Rounder",
-            "Remco Evenepoel": "Climber",
-        }
-        df["specialist"] = df["rider"].map(specialist_map).fillna("All-Rounder")
-        df["specialist_encoded"] = df["specialist"].map(self.specialist_order).fillna(2)
-        
-        # Create stage type encoded
-        df["stage_type_encoded"] = df["stage_type"].map(self.stage_type_order).fillna(0)
-        
-        # Create jersey contender targets (simplified)
-        df["points_jersey_contender"] = ((df["specialist"] == "Sprinter") | (df["position"] <= 3)).astype(int)
-        df["mountains_jersey_contender"] = ((df["specialist"] == "Climber") | (df["position"] <= 3)).astype(int)
-        
-        # Store feature info
-        feature_info = {
-            "rider_features": self.rider_features,
-            "stage_features": self.stage_features,
-            "team_features": self.team_features,
-            "all_features": self.rider_features + self.stage_features + self.team_features + 
-                           ["specialist_encoded", "stage_type_encoded"],
-            "categorical_features": ["specialist", "stage_type"],
-            "numeric_features": self.rider_features + self.stage_features + self.team_features,
-        }
-        
-        return df, feature_info
-    
-    def train_models(self, df: pd.DataFrame, feature_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Train all ML models."""
-        results = {}
-        
-        # Prepare features and targets
-        X = df[feature_info["all_features"]]
-        
-        # Train stage winner classifier
-        print("Training stage winner classifier...")
-        y_winner = df["won_stage"]
-        X_train, X_test, y_train, y_test = train_test_split(X, y_winner, test_size=0.2, random_state=42)
-        
-        self.models["stage_winner"] = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42,
-            class_weight="balanced"
-        )
-        self.models["stage_winner"].fit(X_train, y_train)
-        
-        y_pred = self.models["stage_winner"].predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-        results["stage_winner"] = {
-            "accuracy": accuracy,
-            "report": classification_report(y_test, y_pred, output_dict=True)
-        }
-        print(f"  Stage winner model accuracy: {accuracy:.3f}")
-        
-        # Train GC position regressor
-        print("Training GC position predictor...")
-        y_gc = df["gc_position"]
-        X_train, X_test, y_train, y_test = train_test_split(X, y_gc, test_size=0.2, random_state=42)
-        
-        self.models["gc_position"] = GradientBoostingRegressor(
-            n_estimators=100,
-            max_depth=5,
-            random_state=42
-        )
-        self.models["gc_position"].fit(X_train, y_train)
-        
-        y_pred = self.models["gc_position"].predict(X_test)
-        mae = mean_absolute_error(y_test, y_pred)
-        results["gc_position"] = {
-            "mae": mae,
-            "mse": mean_squared_error(y_test, y_pred),
-            "r2": r2_score(y_test, y_pred)
-        }
-        print(f"  GC position model MAE: {mae:.2f}")
-        
-        # Train time gap predictor
-        print("Training time gap predictor...")
-        y_gap = df["time_gap_seconds"]
-        X_train, X_test, y_train, y_test = train_test_split(X, y_gap, test_size=0.2, random_state=42)
-        
-        self.models["time_gap"] = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42
-        )
-        self.models["time_gap"].fit(X_train, y_train)
-        
-        y_pred = self.models["time_gap"].predict(X_test)
-        mae = mean_absolute_error(y_test, y_pred)
-        results["time_gap"] = {
-            "mae": mae,
-            "mse": mean_squared_error(y_test, y_pred),
-            "r2": r2_score(y_test, y_pred)
-        }
-        print(f"  Time gap model MAE: {mae:.1f} seconds")
-        
-        # Train jersey contender classifiers
-        print("Training jersey contender classifiers...")
-        
-        for jersey in ["points_jersey", "mountains_jersey"]:
-            y_jersey = df[f"{jersey}_contender"]
-            X_train, X_test, y_train, y_test = train_test_split(X, y_jersey, test_size=0.2, random_state=42)
-            
-            self.models[jersey] = RandomForestClassifier(
-                n_estimators=50,
-                max_depth=8,
-                random_state=42
-            )
-            self.models[jersey].fit(X_train, y_train)
-            
-            y_pred = self.models[jersey].predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
-            results[jersey] = {
-                "accuracy": accuracy,
-                "report": classification_report(y_test, y_pred, output_dict=True)
-            }
-            print(f"  {jersey} model accuracy: {accuracy:.3f}")
-        
-        return results
-    
-    def save_models(self):
-        """Save trained models to disk."""
-        for name, model in self.models.items():
-            if model is not None:
-                path = self.models_dir / f"{name}_model.pkl"
-                joblib.dump(model, path)
-                print(f"Saved model: {path}")
-    
-    def load_models(self):
-        """Load trained models from disk."""
-        for name in self.models.keys():
-            path = self.models_dir / f"{name}_model.pkl"
-            if path.exists():
-                self.models[name] = joblib.load(path)
-                print(f"Loaded model: {path}")
-    
-    def predict_stage_winners(self, stage_data: pd.DataFrame, riders: pd.DataFrame) -> pd.DataFrame:
-        """Predict stage winners for a given stage."""
-        if self.models["stage_winner"] is None:
-            self.load_models()
-        
-        predictions = []
-        
-        for _, rider in riders.iterrows():
-            # Create feature vector for this rider on this stage
-            features = self._create_rider_stage_features(rider, stage_data)
-            
-            # Predict probability of winning
-            proba = self.models["stage_winner"].predict_proba(features.reshape(1, -1))[0]
-            win_prob = proba[1] if len(proba) > 1 else proba[0]
-            
-            # Predict GC position
-            gc_pos = self.models["gc_position"].predict(features.reshape(1, -1))[0]
-            
-            # Predict time gap
-            time_gap = self.models["time_gap"].predict(features.reshape(1, -1))[0]
-            
-            predictions.append({
-                "rider_id": rider["rider_id"],
-                "rider": rider["name"],
-                "team": rider["team"],
-                "nationality": rider["nationality"],
-                "specialist": rider["specialist"],
-                "win_probability": float(win_prob),
-                "predicted_gc_position": int(gc_pos),
-                "predicted_time_gap_seconds": float(time_gap),
-                "is_points_contender": int(self.models["points_jersey"].predict(features.reshape(1, -1))[0]),
-                "is_mountains_contender": int(self.models["mountains_jersey"].predict(features.reshape(1, -1))[0]),
+        hist = pd.read_parquet(data_dir / "historical" / "results.parquet")
+        self.hist_results = hist[hist["record"] == "stage_result"].copy()
+        self.hist_gc = hist[hist["record"] == "gc_after_stage"].copy()
+        self.hist_stages = pd.read_parquet(data_dir / "historical" / "stages.parquet")
+        self.hist_finals = pd.read_parquet(
+            data_dir / "historical" / "final_classifications.parquet")
+
+        live = data_dir / "live"
+        self.stages = pd.read_parquet(live / "stages.parquet")
+        self.results = pd.read_parquet(live / "stage_results.parquet")
+        self.gc_evo = pd.read_parquet(live / "gc_evolution.parquet")
+        self.riders = pd.read_parquet(live / "riders.parquet")
+        self.classifications = pd.read_parquet(live / "classifications.parquet")
+
+        # unified view of per-stage results across all years incl. 2026
+        cur = self.results.copy()
+        cur["year"] = CURRENT_YEAR
+        keep = ["year", "stage", "position", "rider", "nationality",
+                "team", "stage_type", "distance_km"]
+        self.all_results = pd.concat(
+            [self.hist_results[keep], cur[keep]], ignore_index=True)
+        self.all_results = self.all_results.dropna(subset=["rider"])
+
+        cur_stages = self.stages.copy()
+        cur_stages["year"] = CURRENT_YEAR
+        self.all_stages = pd.concat(
+            [self.hist_stages[["year", "stage", "stage_type", "distance_km"]],
+             cur_stages[["year", "stage", "stage_type", "distance_km"]]],
+            ignore_index=True)
+
+
+# ----------------------------------------------------------------------------
+# Feature engineering — stage winner / podium models
+# ----------------------------------------------------------------------------
+
+def _count_by_type(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    """Pivot top-10 appearances into per-stage-type count columns."""
+    if df.empty:
+        return pd.DataFrame(columns=[f"{prefix}_{t.split()[0].lower()}"
+                                     for t in STAGE_TYPES])
+    pv = (df.assign(n=1)
+            .pivot_table(index="rider", columns="stage_type", values="n",
+                         aggfunc="sum", fill_value=0))
+    pv.columns = [f"{prefix}_{str(c).split()[0].lower()}" for c in pv.columns]
+    return pv
+
+
+FEATURE_COLS = [
+    "distance_km", "race_progress",
+    "type_flat", "type_hilly", "type_mountain", "type_itt",
+    # career (previous years in dataset)
+    "career_wins", "career_podiums",
+    "career_top10_flat", "career_top10_hilly", "career_top10_mountain",
+    "career_top10_individual",
+    "career_best_final_gc",
+    # current-tour form (stages before the one being predicted)
+    "tour_wins", "tour_podiums",
+    "tour_top10_flat", "tour_top10_hilly", "tour_top10_mountain",
+    "tour_top10_individual",
+    "tour_gc_position",
+    # explicit rider-x-stage-type interactions (the strongest signal:
+    # sprinters win flat stages, climbers win mountain stages)
+    "career_wins_same_type", "career_top10_same_type",
+    "tour_wins_same_type", "tour_podiums_same_type", "tour_top10_same_type",
+]
+
+
+def build_stage_matrix(data: TDFData, year: int, upto_stage: int | None = None,
+                       pool: pd.Series | None = None) -> pd.DataFrame:
+    """One row per (stage, rider) for `year`.
+
+    For training years all stages are emitted (with form features computed
+    from earlier stages of the same tour only — no leakage). For 2026,
+    `upto_stage` limits form features and `pool` supplies the startlist.
+    """
+    results = data.all_results
+    year_stages = data.all_stages[data.all_stages["year"] == year]
+    year_results = results[results["year"] == year]
+
+    career = results[results["year"] < year]
+    career_top10 = _count_by_type(career, "career_top10")
+    career_wins_t = _count_by_type(career[career["position"] == 1], "career_wins")
+    career_wins = career[career["position"] == 1].groupby("rider").size()
+    career_podiums = career[career["position"] <= 3].groupby("rider").size()
+
+    finals_gc = data.hist_finals.query(
+        "classification == 'general' and year < @year")
+    career_best_gc = finals_gc.groupby("rider")["rank"].min()
+
+    if pool is None:
+        pool_riders = pd.Index(year_results["rider"].unique())
+    else:
+        pool_riders = pd.Index(pool.unique())
+
+    if year == CURRENT_YEAR:
+        gc_source = data.gc_evo
+    else:
+        gc_source = data.hist_gc[data.hist_gc["year"] == year]
+
+    rows = []
+    stage_list = year_stages.sort_values("stage")
+    for _, st in stage_list.iterrows():
+        s_no, s_type = int(st["stage"]), st["stage_type"]
+        if s_type == "Team time trial":
+            continue  # team event: no rider-level winner
+        if upto_stage is not None and s_no <= upto_stage:
+            continue
+        # form = everything earlier in this tour
+        before = year_results[year_results["stage"] < s_no]
+        form_top10 = _count_by_type(before, "tour_top10")
+        form_wins_t = _count_by_type(before[before["position"] == 1], "tour_wins")
+        form_pod_t = _count_by_type(before[before["position"] <= 3], "tour_podiums")
+        form_wins = before[before["position"] == 1].groupby("rider").size()
+        form_podiums = before[before["position"] <= 3].groupby("rider").size()
+        type_key = s_type.split()[0].lower()
+        gc_before = gc_source[gc_source["stage"] < s_no]
+        if not gc_before.empty:
+            last_gc = gc_before[gc_before["stage"] == gc_before["stage"].max()]
+            gc_pos = last_gc.set_index("rider")["position"]
+        else:
+            gc_pos = pd.Series(dtype=float)
+
+        stage_winners = set(
+            year_results.query("stage == @s_no and position == 1")["rider"])
+        stage_podium = set(
+            year_results.query("stage == @s_no and position <= 3")["rider"])
+
+        for rider in pool_riders:
+            rows.append({
+                "year": year, "stage": s_no, "rider": rider,
+                "stage_type": s_type,
+                "distance_km": st["distance_km"],
+                "race_progress": s_no / 21,
+                "type_flat": int(s_type == "Flat"),
+                "type_hilly": int(s_type == "Hilly"),
+                "type_mountain": int(s_type == "Mountain"),
+                "type_itt": int(s_type == "Individual time trial"),
+                "career_wins": int(career_wins.get(rider, 0)),
+                "career_podiums": int(career_podiums.get(rider, 0)),
+                "career_top10_flat": int(career_top10.get("career_top10_flat", pd.Series()).get(rider, 0)),
+                "career_top10_hilly": int(career_top10.get("career_top10_hilly", pd.Series()).get(rider, 0)),
+                "career_top10_mountain": int(career_top10.get("career_top10_mountain", pd.Series()).get(rider, 0)),
+                "career_top10_individual": int(career_top10.get("career_top10_individual", pd.Series()).get(rider, 0)),
+                "career_best_final_gc": float(career_best_gc.get(rider, 60)),
+                "tour_wins": int(form_wins.get(rider, 0)),
+                "tour_podiums": int(form_podiums.get(rider, 0)),
+                "tour_top10_flat": int(form_top10.get("tour_top10_flat", pd.Series()).get(rider, 0)),
+                "tour_top10_hilly": int(form_top10.get("tour_top10_hilly", pd.Series()).get(rider, 0)),
+                "tour_top10_mountain": int(form_top10.get("tour_top10_mountain", pd.Series()).get(rider, 0)),
+                "tour_top10_individual": int(form_top10.get("tour_top10_individual", pd.Series()).get(rider, 0)),
+                "tour_gc_position": float(gc_pos.get(rider, 60)),
+                "career_wins_same_type": int(career_wins_t.get(f"career_wins_{type_key}", pd.Series()).get(rider, 0)),
+                "career_top10_same_type": int(career_top10.get(f"career_top10_{type_key}", pd.Series()).get(rider, 0)),
+                "tour_wins_same_type": int(form_wins_t.get(f"tour_wins_{type_key}", pd.Series()).get(rider, 0)),
+                "tour_podiums_same_type": int(form_pod_t.get(f"tour_podiums_{type_key}", pd.Series()).get(rider, 0)),
+                "tour_top10_same_type": int(form_top10.get(f"tour_top10_{type_key}", pd.Series()).get(rider, 0)),
+                "won_stage": int(rider in stage_winners),
+                "top3_stage": int(rider in stage_podium),
             })
-        
-        # Sort by win probability
-        predictions_df = pd.DataFrame(predictions)
-        predictions_df = predictions_df.sort_values("win_probability", ascending=False)
-        
-        return predictions_df
-    
-    def _create_rider_stage_features(self, rider: pd.Series, stage_data: pd.DataFrame) -> np.ndarray:
-        """Create feature vector for a rider on a specific stage."""
-        # Get stage features
-        stage_features = {
-            "distance_km": stage_data.get("distance_km", 150),
-            "elevation_m": stage_data.get("elevation_m", 1000),
-            "is_mountain_stage": int(stage_data.get("is_mountain_stage", False)),
-            "is_tt": int(stage_data.get("is_tt", False)),
-            "num_climbs_hc": stage_data.get("num_climbs_hc", 0),
-            "num_climbs_cat1": stage_data.get("num_climbs_cat1", 0),
-            "num_climbs_cat2": stage_data.get("num_climbs_cat2", 0),
-        }
-        
-        # Get rider features
-        rider_features = {
-            "age": rider.get("age", 28),
-            "height_m": rider.get("height_m", 1.75),
-            "weight_kg": rider.get("weight_kg", 68),
-            "uci_points": rider.get("uci_points", 2000),
-            "2026_wins": rider.get("2026_wins", 2),
-            "grand_tour_wins": rider.get("grand_tour_wins", 0),
-            "bmi": rider.get("weight_kg", 68) / (rider.get("height_m", 1.75) ** 2),
-        }
-        
-        # Get team features
-        team_budgets = {
-            "Team Visma | Lease a Bike": 45,
-            "UAE Team Emirates": 50,
-            "Soudal Quick-Step": 40,
-            "Alpecin-Deceuninck": 25,
-            "Lidl-Trek": 35,
-            "Intermarché-Wanty": 20,
-            "Bora-Hansgrohe": 30,
-            "INEOS Grenadiers": 45,
-        }
-        team_features = {
-            "team_budget_million": team_budgets.get(rider.get("team", ""), 30)
-        }
-        
-        # Combine all features
-        all_features = {**rider_features, **stage_features, **team_features}
-        
-        # Add encoded features
-        all_features["specialist_encoded"] = self.specialist_order.get(rider.get("specialist", "All-Rounder"), 2)
-        all_features["stage_type_encoded"] = self.stage_type_order.get(stage_data.get("stage_type", "Flat"), 0)
-        
-        # Create feature array in correct order
-        feature_order = (
-            self.rider_features + 
-            self.stage_features + 
-            self.team_features + 
-            ["specialist_encoded", "stage_type_encoded"]
-        )
-        
-        return np.array([all_features.get(f, 0) for f in feature_order])
-    
-    def predict_all_stages(self, stages: pd.DataFrame, riders: pd.DataFrame) -> Dict[int, pd.DataFrame]:
-        """Predict winners for all stages."""
-        predictions = {}
-        
-        for _, stage in stages.iterrows():
-            stage_num = stage["stage"]
-            predictions[stage_num] = self.predict_stage_winners(stage, riders)
-        
-        return predictions
+    return pd.DataFrame(rows)
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="Train and run TDF prediction models")
-    parser.add_argument("--train", action="store_true", help="Train models")
-    parser.add_argument("--predict", action="store_true", help="Generate predictions")
-    parser.add_argument("--predict-all", action="store_true", help="Generate predictions for all stages")
-    parser.add_argument("--stage", type=int, default=None, help="Specific stage to predict")
-    parser.add_argument("--data-dir", type=str, default="data", help="Data directory")
-    parser.add_argument("--output", type=str, default="data/predictions", help="Output directory for predictions")
-    
+# ----------------------------------------------------------------------------
+# Feature engineering — GC models
+# ----------------------------------------------------------------------------
+
+GC_FEATURE_COLS = [
+    "gap_after8_seconds", "position_after8",
+    "remaining_mountain_stages", "remaining_itt_km", "remaining_km",
+    "career_best_final_gc", "tour_wins_so_far", "tour_top10_mountain_so_far",
+]
+
+
+def remaining_route_features(stages: pd.DataFrame, after_stage: int) -> dict:
+    rem = stages[stages["stage"] > after_stage]
+    itt = rem[rem["stage_type"] == "Individual time trial"]
+    return {
+        "remaining_mountain_stages": int((rem["stage_type"] == "Mountain").sum()),
+        "remaining_itt_km": float(itt["distance_km"].sum()),
+        "remaining_km": float(rem["distance_km"].sum()),
+    }
+
+
+def build_gc_matrix(data: TDFData) -> pd.DataFrame:
+    """Training rows: GC top-10 after stage 8, one per (year, rider)."""
+    rows = []
+    for year in sorted(data.hist_gc["year"].unique()):
+        gc8 = data.hist_gc.query("year == @year and stage == @PIVOT_STAGE")
+        finals = data.hist_finals.query(
+            "classification == 'general' and year == @year")
+        final_gap = finals.set_index("rider")["gap_seconds"]
+        final_rank = finals.set_index("rider")["rank"]
+        stages_y = data.hist_stages[data.hist_stages["year"] == year]
+        route = remaining_route_features(stages_y, PIVOT_STAGE)
+        res_y = data.hist_results.query("year == @year and stage <= @PIVOT_STAGE")
+        wins8 = res_y[res_y["position"] == 1].groupby("rider").size()
+        mtn8 = res_y[(res_y["position"] <= 10)
+                     & (res_y["stage_type"] == "Mountain")].groupby("rider").size()
+        career_gc = data.hist_finals.query(
+            "classification == 'general' and year < @year")
+        career_best = career_gc.groupby("rider")["rank"].min()
+        for _, r in gc8.iterrows():
+            rider = r["rider"]
+            rows.append({
+                "year": year, "rider": rider,
+                "gap_after8_seconds": r["gap_seconds"],
+                "position_after8": r["position"],
+                **route,
+                "career_best_final_gc": float(career_best.get(rider, 60)),
+                "tour_wins_so_far": int(wins8.get(rider, 0)),
+                "tour_top10_mountain_so_far": int(mtn8.get(rider, 0)),
+                "final_gap_seconds": float(final_gap.get(rider, np.nan)),
+                # riders who fell out of the final top 10 (crash, blow-up,
+                # abandon) get a censored rank of 12
+                "final_rank": float(final_rank.get(rider, 12)),
+                "final_podium": int(final_rank.get(rider, 99) <= 3),
+            })
+    return pd.DataFrame(rows)
+
+
+# ----------------------------------------------------------------------------
+# Training + honest evaluation (leave-one-year-out)
+# ----------------------------------------------------------------------------
+
+def make_stage_model() -> GradientBoostingClassifier:
+    return GradientBoostingClassifier(
+        n_estimators=200, max_depth=3, learning_rate=0.05,
+        subsample=0.9, random_state=RANDOM_STATE)
+
+
+def evaluate_stage_model(matrix: pd.DataFrame, target: str) -> dict:
+    """Leave-one-year-out CV, scored on stages 9-21 of the held-out year —
+    the regime the deployed model runs in (predicting the rest of the race
+    with a week of form data), so the published numbers match reality."""
+    years = sorted(matrix["year"].unique())
+    top1_hits, top3_hits, n_stages = 0, 0, 0
+    all_proba, all_true = [], []
+    for held in years:
+        train = matrix[matrix["year"] != held]
+        test = matrix[(matrix["year"] == held) & (matrix["stage"] > PIVOT_STAGE)]
+        model = make_stage_model()
+        model.fit(train[FEATURE_COLS], train[target])
+        proba = model.predict_proba(test[FEATURE_COLS])[:, 1]
+        test = test.assign(proba=proba)
+        all_proba.extend(proba)
+        all_true.extend(test[target])
+        for s_no, grp in test.groupby("stage"):
+            actual = set(grp.loc[grp["won_stage"] == 1, "rider"])
+            if not actual:
+                continue
+            ranked = grp.sort_values("proba", ascending=False)["rider"].tolist()
+            n_stages += 1
+            top1_hits += int(ranked[0] in actual)
+            top3_hits += int(bool(actual & set(ranked[:3])))
+    return {
+        "cv_top1_rate": top1_hits / n_stages,
+        "cv_top3_rate": top3_hits / n_stages,
+        "cv_auc": roc_auc_score(all_true, all_proba),
+        "cv_log_loss": log_loss(all_true, all_proba),
+        "n_eval_stages": n_stages,
+    }
+
+
+def make_gc_regressor() -> GradientBoostingRegressor:
+    return GradientBoostingRegressor(
+        n_estimators=80, max_depth=2, learning_rate=0.05, loss="huber",
+        min_samples_leaf=5, random_state=RANDOM_STATE)
+
+
+def evaluate_gc_models(gc: pd.DataFrame) -> tuple[dict, dict]:
+    """The regressor predicts each rider's FINAL GC position (riders who
+    dropped out of the top 10 are censored at 12). Also reports the
+    'no change' baseline (final position = position after stage 8)."""
+    years = sorted(gc["year"].unique())
+    reg_pred, reg_true, base_pred = [], [], []
+    cls_proba, cls_true = [], []
+    for held in years:
+        train, test = gc[gc["year"] != held], gc[gc["year"] == held]
+        reg = make_gc_regressor()
+        reg.fit(train[GC_FEATURE_COLS], train["final_rank"])
+        reg_pred.extend(reg.predict(test[GC_FEATURE_COLS]))
+        reg_true.extend(test["final_rank"])
+        base_pred.extend(test["position_after8"])
+        cls = RandomForestClassifier(
+            n_estimators=300, max_depth=4, random_state=RANDOM_STATE,
+            class_weight="balanced")
+        cls.fit(train[GC_FEATURE_COLS], train["final_podium"])
+        cls_proba.extend(cls.predict_proba(test[GC_FEATURE_COLS])[:, 1])
+        cls_true.extend(test["final_podium"])
+    reg_metrics = {
+        "cv_mae_places": mean_absolute_error(reg_true, reg_pred),
+        "cv_r2": r2_score(reg_true, reg_pred),
+        "baseline_mae_places": mean_absolute_error(reg_true, base_pred),
+        "n_rows": len(reg_true),
+    }
+    cls_metrics = {
+        "cv_auc": roc_auc_score(cls_true, cls_proba),
+        "cv_log_loss": log_loss(cls_true, cls_proba),
+        "n_rows": len(cls_true),
+    }
+    return reg_metrics, cls_metrics
+
+
+# ----------------------------------------------------------------------------
+# Rider profiles (data-derived specialities — used for display & analysis)
+# ----------------------------------------------------------------------------
+
+def build_rider_profiles(data: TDFData) -> pd.DataFrame:
+    res = data.all_results
+    top10 = _count_by_type(res[res["position"] <= 10], "top10")
+    wins = res[res["position"] == 1].groupby("rider").size().rename("career_stage_wins")
+    podiums = res[res["position"] <= 3].groupby("rider").size().rename("career_podiums")
+    gc_top10 = pd.concat([
+        data.hist_finals.query("classification == 'general' and rank <= 10")["rider"],
+        data.gc_evo.query("stage == @PIVOT_STAGE and position <= 10")["rider"],
+    ]).value_counts().rename("gc_top10_years")
+
+    prof = data.riders[["rider", "team", "country", "age", "status"]].copy()
+    prof = (prof.set_index("rider")
+            .join([top10, wins, podiums, gc_top10]).fillna(0).reset_index())
+    for c in ["top10_flat", "top10_hilly", "top10_mountain", "top10_individual"]:
+        if c not in prof.columns:
+            prof[c] = 0
+
+    def classify(r) -> str:
+        total = r.top10_flat + r.top10_hilly + r.top10_mountain + r.top10_individual
+        if r.gc_top10_years > 0 and r.top10_mountain >= 2:
+            return "GC contender"
+        if total == 0:
+            return "Domestique"
+        if r.top10_flat >= max(r.top10_mountain, r.top10_hilly) and r.top10_flat >= 2:
+            return "Sprinter"
+        if r.top10_mountain > max(r.top10_flat, r.top10_hilly):
+            return "Climber"
+        if r.top10_individual >= 2 and r.top10_individual >= r.top10_mountain:
+            return "Time trialist"
+        if r.top10_hilly >= 2:
+            return "Puncheur"
+        return "Stage hunter"
+
+    prof["specialist"] = prof.apply(classify, axis=1)
+    int_cols = ["career_stage_wins", "career_podiums", "gc_top10_years",
+                "top10_flat", "top10_hilly", "top10_mountain", "top10_individual"]
+    prof[int_cols] = prof[int_cols].astype(int)
+    return prof
+
+
+# ----------------------------------------------------------------------------
+# Prediction
+# ----------------------------------------------------------------------------
+
+def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
+                 profiles: pd.DataFrame) -> None:
+    stage_winner = joblib.load(models_dir / "stage_winner_model.pkl")
+    stage_podium = joblib.load(models_dir / "stage_podium_model.pkl")
+    gc_reg = joblib.load(models_dir / "gc_position_model.pkl")
+    gc_cls = joblib.load(models_dir / "gc_podium_model.pkl")
+
+    active = data.riders.query("status == 'active'")["rider"]
+    matrix = build_stage_matrix(
+        data, CURRENT_YEAR, upto_stage=PIVOT_STAGE, pool=active)
+
+    matrix["win_probability_raw"] = stage_winner.predict_proba(
+        matrix[FEATURE_COLS])[:, 1]
+    matrix["podium_probability"] = stage_podium.predict_proba(
+        matrix[FEATURE_COLS])[:, 1]
+    # exactly one rider wins each stage: normalise per stage
+    matrix["win_probability"] = matrix.groupby("stage")[
+        "win_probability_raw"].transform(lambda p: p / p.sum())
+    matrix["predicted_rank"] = matrix.groupby("stage")[
+        "win_probability"].rank(ascending=False, method="first").astype(int)
+
+    stage_meta = data.stages[[
+        "stage", "date", "start_location", "end_location"]].copy()
+    preds = matrix.merge(stage_meta, on="stage", how="left").merge(
+        profiles[["rider", "team", "country", "age", "specialist"]],
+        on="rider", how="left")
+    cols = ["stage", "date", "start_location", "end_location", "stage_type",
+            "distance_km", "rider", "team", "country", "age", "specialist",
+            "win_probability", "podium_probability", "predicted_rank"]
+    preds = preds[cols].sort_values(["stage", "predicted_rank"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    preds.to_parquet(out_dir / "stage_predictions.parquet", index=False)
+    print(f"  predictions/stage_predictions: {len(preds)} rows "
+          f"({preds['stage'].nunique()} stages x {preds['rider'].nunique()} riders)")
+
+    # ---- final GC forecast ------------------------------------------------
+    gc_now = data.gc_evo.query("stage == @PIVOT_STAGE").copy()
+    route = remaining_route_features(data.stages, PIVOT_STAGE)
+    res8 = data.results.query("stage <= @PIVOT_STAGE")
+    wins8 = res8[res8["position"] == 1].groupby("rider").size()
+    mtn8 = res8[(res8["position"] <= 10)
+                & (res8["stage_type"] == "Mountain")].groupby("rider").size()
+    career_gc = data.hist_finals.query("classification == 'general'")
+    career_best = career_gc.groupby("rider")["rank"].min()
+    gc_rows = []
+    for _, r in gc_now.iterrows():
+        gc_rows.append({
+            "rider": r["rider"], "team": r["team"],
+            "current_position": r["position"],
+            "current_gap_seconds": r["gap_seconds"],
+            "gap_after8_seconds": r["gap_seconds"],
+            "position_after8": r["position"],
+            **route,
+            "career_best_final_gc": float(career_best.get(r["rider"], 60)),
+            "tour_wins_so_far": int(wins8.get(r["rider"], 0)),
+            "tour_top10_mountain_so_far": int(mtn8.get(r["rider"], 0)),
+        })
+    gc_pred = pd.DataFrame(gc_rows)
+    gc_pred["predicted_position_score"] = gc_reg.predict(
+        gc_pred[GC_FEATURE_COLS]).round(1)
+    gc_pred["podium_probability"] = gc_cls.predict_proba(
+        gc_pred[GC_FEATURE_COLS])[:, 1].round(3)
+    gc_pred["predicted_final_position"] = gc_pred[
+        "predicted_position_score"].rank(method="first").astype(int)
+    gc_pred["current_gap"] = gc_pred["current_gap_seconds"].map(
+        lambda s: "—" if s == 0 else f"+ {int(s // 60)}' {int(s % 60):02d}\"")
+    keep = ["rider", "team", "current_position", "current_gap",
+            "current_gap_seconds", "predicted_final_position",
+            "predicted_position_score", "podium_probability"]
+    gc_pred[keep].sort_values("predicted_final_position").to_parquet(
+        out_dir / "gc_forecast.parquet", index=False)
+    print(f"  predictions/gc_forecast: {len(gc_pred)} riders")
+
+    # ---- jersey projections ------------------------------------------------
+    def expected_finish_points(row) -> float:
+        pts = FINISH_POINTS[row["stage_type"]]
+        p_win = row["win_probability"]
+        p_pod = max(row["podium_probability"] - p_win, 0)
+        return p_win * pts[0] + p_pod * (pts[1] + pts[2]) / 2
+
+    preds_p = matrix.merge(data.stages[["stage"]], on="stage")
+    preds_p = matrix.copy()
+    preds_p["exp_points"] = preds_p.apply(expected_finish_points, axis=1)
+    exp_green = preds_p.groupby("rider")["exp_points"].sum()
+
+    kom = preds_p[preds_p["stage_type"].isin(KOM_WIN_POINTS)].copy()
+    kom["exp_kom"] = kom.apply(
+        lambda r: r["win_probability"] * KOM_WIN_POINTS[r["stage_type"]]
+        + max(r["podium_probability"] - r["win_probability"], 0)
+        * KOM_WIN_POINTS[r["stage_type"]] * 0.4, axis=1)
+    exp_kom = kom.groupby("rider")["exp_kom"].sum()
+
+    jerseys = []
+    for cls_name, expected in (("points", exp_green), ("mountains", exp_kom)):
+        current = data.classifications.query(
+            "classification == @cls_name").set_index("rider")["points"]
+        riders_union = current.index.union(expected.index)
+        proj = pd.DataFrame({
+            "classification": cls_name,
+            "rider": riders_union,
+            "current_points": [float(current.get(r, 0) or 0) for r in riders_union],
+            "projected_additional_points":
+                [round(float(expected.get(r, 0)), 1) for r in riders_union],
+        })
+        proj["projected_total_points"] = (
+            proj["current_points"] + proj["projected_additional_points"]).round(1)
+        proj["current_rank"] = (proj["current_points"]
+                                .rank(ascending=False, method="min").astype(int))
+        proj["projected_rank"] = (proj["projected_total_points"]
+                                  .rank(ascending=False, method="first").astype(int))
+        jerseys.append(proj.sort_values("projected_rank").head(30))
+    jersey_df = pd.concat(jerseys, ignore_index=True).merge(
+        profiles[["rider", "team", "specialist"]], on="rider", how="left")
+    jersey_df.to_parquet(out_dir / "jersey_projections.parquet", index=False)
+    print(f"  predictions/jersey_projections: {len(jersey_df)} rows")
+
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Train TDF models / predict 2026")
+    parser.add_argument("--train", action="store_true")
+    parser.add_argument("--predict", action="store_true")
+    parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--models-dir", default="models")
     args = parser.parse_args()
-    
-    predictor = TDFPredictor(data_dir=Path(args.data_dir))
-    
-    if args.train:
-        # Load data
-        data = predictor.load_data()
-        
-        # Prepare training data
-        df, feature_info = predictor.prepare_training_data(data)
-        
-        # Train models
-        results = predictor.train_models(df, feature_info)
-        
-        # Save models
-        predictor.save_models()
-        
-        # Save training results
-        with open("training_results.json", "w") as f:
-            json.dump(results, f, indent=2)
-        
-        print("\nTraining complete! Models saved to models/")
-        print(f"Results saved to training_results.json")
-    
-    if args.predict or args.predict_all:
-        # Load models
-        predictor.load_models()
-        
-        # Load data
-        data = predictor.load_data()
-        stages = data.get("stages", pd.DataFrame())
-        riders = data.get("riders", pd.DataFrame())
-        
-        if stages.empty or riders.empty:
-            print("Error: No stage or rider data found. Run fetch script first.")
-            return
-        
-        output_dir = Path(args.output)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        if args.predict_all:
-            # Predict for all stages
-            predictions = predictor.predict_all_stages(stages, riders)
-            
-            # Save each stage's predictions
-            for stage_num, pred_df in predictions.items():
-                pred_df.to_parquet(output_dir / f"stage_{stage_num}_predictions.parquet")
-            
-            # Save combined predictions
-            all_preds = pd.concat(predictions.values(), keys=predictions.keys())
-            all_preds.index.names = ["stage", "rank"]
-            all_preds.to_parquet(output_dir / "all_stage_predictions.parquet")
-            
-            print(f"Generated predictions for {len(predictions)} stages")
-            print(f"Saved to {output_dir}")
-        
-        elif args.stage:
-            # Predict for specific stage
-            stage_data = stages[stages["stage"] == args.stage]
-            if stage_data.empty:
-                print(f"Error: Stage {args.stage} not found")
-                return
-            
-            predictions = predictor.predict_stage_winners(stage_data.iloc[0], riders)
-            predictions.to_parquet(output_dir / f"stage_{args.stage}_predictions.parquet")
-            
-            print(f"Generated predictions for Stage {args.stage}")
-            print(predictions.head(10))
-    
-    if not (args.train or args.predict or args.predict_all):
+    if not (args.train or args.predict):
         parser.print_help()
+        return 1
+
+    data_dir, models_dir = Path(args.data_dir), Path(args.models_dir)
+    out_dir = data_dir / "predictions"
+    data = TDFData(data_dir)
+    profiles = build_rider_profiles(data)
+    profiles.to_parquet(data_dir / "live" / "rider_profiles.parquet", index=False)
+    print(f"rider_profiles: {len(profiles)} riders "
+          f"({profiles['specialist'].value_counts().to_dict()})")
+
+    if args.train:
+        print("Building training matrices from 2020-2025 results...")
+        matrices = [build_stage_matrix(data, y)
+                    for y in sorted(data.hist_results["year"].unique())]
+        matrix = pd.concat(matrices, ignore_index=True)
+        print(f"  stage matrix: {len(matrix)} rider-stage rows, "
+              f"{matrix['won_stage'].sum()} winners")
+        gc_matrix = build_gc_matrix(data)
+        print(f"  GC matrix: {len(gc_matrix)} rows")
+
+        print("Cross-validating (leave-one-year-out)...")
+        winner_metrics = evaluate_stage_model(matrix, "won_stage")
+        podium_metrics = evaluate_stage_model(matrix, "top3_stage")
+        gc_reg_metrics, gc_cls_metrics = evaluate_gc_models(gc_matrix)
+        print(f"  stage winner: top1 {winner_metrics['cv_top1_rate']:.0%}, "
+              f"top3 {winner_metrics['cv_top3_rate']:.0%}, "
+              f"AUC {winner_metrics['cv_auc']:.3f}")
+        print(f"  GC position: MAE {gc_reg_metrics['cv_mae_places']:.2f} places "
+              f"(no-change baseline {gc_reg_metrics['baseline_mae_places']:.2f}), "
+              f"R2 {gc_reg_metrics['cv_r2']:.2f}")
+
+        print("Fitting final models on all years...")
+        models_dir.mkdir(parents=True, exist_ok=True)
+        m_win = make_stage_model().fit(matrix[FEATURE_COLS], matrix["won_stage"])
+        m_pod = make_stage_model().fit(matrix[FEATURE_COLS], matrix["top3_stage"])
+        m_gc = make_gc_regressor().fit(
+            gc_matrix[GC_FEATURE_COLS], gc_matrix["final_rank"])
+        m_gcp = RandomForestClassifier(
+            n_estimators=300, max_depth=4, random_state=RANDOM_STATE,
+            class_weight="balanced").fit(
+            gc_matrix[GC_FEATURE_COLS], gc_matrix["final_podium"])
+        joblib.dump(m_win, models_dir / "stage_winner_model.pkl")
+        joblib.dump(m_pod, models_dir / "stage_podium_model.pkl")
+        joblib.dump(m_gc, models_dir / "gc_position_model.pkl")
+        joblib.dump(m_gcp, models_dir / "gc_podium_model.pkl")
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        perf = pd.DataFrame([
+            {"model_name": "Stage winner", "algorithm": "GradientBoostingClassifier",
+             "target": "P(rider wins stage)",
+             "top1_rate": round(winner_metrics["cv_top1_rate"], 3),
+             "top3_rate": round(winner_metrics["cv_top3_rate"], 3),
+             "auc": round(winner_metrics["cv_auc"], 3),
+             "log_loss": round(winner_metrics["cv_log_loss"], 4),
+             "mae_places": None, "baseline_mae_places": None, "r2": None,
+             "n_train": int(len(matrix)),
+             "headline": f"picks the actual winner {winner_metrics['cv_top1_rate']:.0%} of stages; winner in model top-3 {winner_metrics['cv_top3_rate']:.0%}"},
+            {"model_name": "Stage podium", "algorithm": "GradientBoostingClassifier",
+             "target": "P(rider finishes top 3)",
+             "top1_rate": round(podium_metrics["cv_top1_rate"], 3),
+             "top3_rate": round(podium_metrics["cv_top3_rate"], 3),
+             "auc": round(podium_metrics["cv_auc"], 3),
+             "log_loss": round(podium_metrics["cv_log_loss"], 4),
+             "mae_places": None, "baseline_mae_places": None, "r2": None,
+             "n_train": int(len(matrix)),
+             "headline": f"AUC {podium_metrics['cv_auc']:.2f} ranking top-3 finishers"},
+            {"model_name": "Final GC position", "algorithm": "GradientBoostingRegressor",
+             "target": "final GC position of top-10 after stage 8",
+             "top1_rate": None, "top3_rate": None,
+             "auc": None, "log_loss": None,
+             "mae_places": round(gc_reg_metrics["cv_mae_places"], 2),
+             "baseline_mae_places": round(gc_reg_metrics["baseline_mae_places"], 2),
+             "r2": round(gc_reg_metrics["cv_r2"], 3),
+             "n_train": int(gc_reg_metrics["n_rows"]),
+             "headline": f"average error {gc_reg_metrics['cv_mae_places']:.1f} places "
+                         f"(baseline: standings freeze at {gc_reg_metrics['baseline_mae_places']:.1f})"},
+            {"model_name": "GC podium", "algorithm": "RandomForestClassifier",
+             "target": "P(final GC podium)",
+             "top1_rate": None, "top3_rate": None,
+             "auc": round(gc_cls_metrics["cv_auc"], 3),
+             "log_loss": round(gc_cls_metrics["cv_log_loss"], 4),
+             "mae_places": None, "baseline_mae_places": None, "r2": None,
+             "n_train": int(gc_cls_metrics["n_rows"]),
+             "headline": f"AUC {gc_cls_metrics['cv_auc']:.2f} identifying final podium riders"},
+            {"model_name": "Jersey projections", "algorithm": "Expected-points simulation",
+             "target": "green/polka-dot points at Paris",
+             "top1_rate": None, "top3_rate": None, "auc": None, "log_loss": None,
+             "mae_places": None, "baseline_mae_places": None, "r2": None,
+             "n_train": None,
+             "headline": "current points + expected finish points from the two stage models"},
+        ])
+        perf["cv_scheme"] = "leave-one-year-out CV, 2020-2025"
+        perf["trained_at"] = now
+        perf.to_parquet(data_dir / "model_performance.parquet", index=False)
+        print("  model_performance.parquet written")
+
+    if args.predict:
+        print("Generating 2026 predictions...")
+        predict_2026(data, models_dir, out_dir, profiles)
+
+    print("✓ Done")
+    return 0
 
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    sys.exit(main())
