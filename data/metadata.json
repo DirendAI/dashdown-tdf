@@ -1,0 +1,10 @@
+{
+  "last_refreshed": "2026-07-11T15:44:14Z",
+  "data_sources": [
+    "ProCyclingStats",
+    "Cycling Archives"
+  ],
+  "refresh_interval": "daily",
+  "next_refresh": "2026-07-12T08:00:00Z",
+  "note": "Sample data for testing - replace with real API calls"
+}
