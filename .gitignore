@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Dashdown
+.dashdown/
+_node/
+
+# Data
+.data/
+.cache/
+.crawl/
+
+# Build artifacts
+/dist/
+/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local configuration
+.env.local
+.env.*.local
+
+# Parquet files (keep these in repo for reproducibility)
+!data/**/*.parquet
+!data/**/*.json
+
+# Sample data (for development)
+!data/historical/
+!data/live/
+!data/predictions/
+!data/metadata.json
+!data/race_overview.parquet
+!data/feature_importance.parquet
+!data/model_performance.parquet
