@@ -99,10 +99,17 @@ rate, AUC, GC MAE vs the standings-freeze baseline) are published on the
 
 - **daily-refresh.yml** — daily at 08:00 UTC during the race: fetch → retrain
   → predict → commit → deploy
-- **deploy.yml** — build & deploy to GitHub Pages on push to `main`, with
-  quality gates (baked Ask answers, charts actually draw)
+- **deploy.yml** — build & deploy to **Cloudflare Pages**
+  (https://dashdown-tdf.pages.dev) on push to `main`, with quality gates
+  (baked Ask answers, charts actually draw)
 
-Add `MISTRAL_API_KEY` as a repository secret to enable AI commentary in CI.
+Repository secrets used by CI:
+
+| Secret | Purpose |
+|--------|---------|
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account for Pages deploys |
+| `CLOUDFLARE_API_TOKEN` | API token with the *Cloudflare Pages — Edit* permission |
+| `MISTRAL_API_KEY` | Bakes AI commentary into the build (optional) |
 
 ## 📄 License
 

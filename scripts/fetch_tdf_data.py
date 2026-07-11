@@ -689,10 +689,14 @@ def build_2026(client: WikiClient, out: Path) -> dict:
     # a TTT winner is a team, not a rider
     ttt = stages["stage_type"] == "Team time trial"
     stages.loc[ttt & stages["winner"].isna(), "winner"] = stages.loc[ttt, "winner_team"]
+    # rider winners carry no team template in the route table — fill from startlist
+    riders = apply_team_names(riders, names)
+    rider_team = riders.set_index("rider")["team"]
+    fill = stages["winner_team"].isna() & stages["winner"].notna()
+    stages.loc[fill, "winner_team"] = stages.loc[fill, "winner"].map(rider_team)
     results = apply_team_names(results, names)
     gc_evo = apply_team_names(gc_evo, names)
     classifications = apply_team_names(classifications, names)
-    riders = apply_team_names(riders, names)
 
     stages["completed"] = stages["winner"].notna()
     stages["is_tt"] = stages["stage_type"].str.contains("time trial", case=False)

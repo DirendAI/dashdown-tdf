@@ -30,10 +30,9 @@ charts:
   default_height: 400
   default_width: "100%"
 
-# Build settings
+# Build settings (deployed at the domain root on Cloudflare Pages)
 build:
   out_dir: "dist"
-  base_path: "/dashdown-tdf"
   clean: true
 
 # Server settings (for local development)
