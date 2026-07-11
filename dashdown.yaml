@@ -4,6 +4,9 @@ branding:
   logo: "/assets/favicon.svg"
   favicon: "/assets/favicon.svg"
 
+# Coding-agent guides to keep in sync via `dashdown skill`
+agents: [mistral]
+
 palette:
   # TDF-themed colors
   primary: '#FFD700'    # Yellow jersey

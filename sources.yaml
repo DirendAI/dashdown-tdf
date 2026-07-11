@@ -1,26 +1,25 @@
 # Data source configuration for Dashdown
 # All data is stored in Parquet format for efficient querying
 
-connectors:
-  # Main data connector - all data
-  main:
-    type: parquet
-    path: data
-    
-  # Historical data (2020-2025)
-  historical:
-    type: parquet
-    path: data/historical
-    
-  # Live 2026 data
-  live_2026:
-    type: parquet
-    path: data/live
-    
-  # ML predictions
-  predictions:
-    type: parquet
-    path: data/predictions
-
 # Default connector for queries without explicit connector
-_default: main
+default: main
+
+# Main data connector - all data
+main:
+  type: parquet
+  path: data
+
+# Historical data (2020-2025)
+historical:
+  type: parquet
+  path: data/historical
+
+# Live 2026 data
+live_2026:
+  type: parquet
+  path: data/live
+
+# ML predictions
+predictions:
+  type: parquet
+  path: data/predictions
