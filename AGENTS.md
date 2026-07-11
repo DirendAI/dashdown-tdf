@@ -387,12 +387,17 @@ python -c "import duckdb; print(duckdb.sql('SELECT COUNT(*) FROM \"data/live/*.p
 
 ## 🚀 Deployment
 
-### GitHub Pages
+### Cloudflare Pages
 
-The dashboard auto-deploys to GitHub Pages:
+The dashboard auto-deploys to Cloudflare Pages:
 - **Trigger**: Push to main, or daily refresh workflow
-- **URL**: `https://direndai.github.io/dashdown-tdf/`
-- **Workflow**: `.github/workflows/deploy.yml`
+- **URL**: `https://dashdown-tdf.pages.dev`
+- **Workflow**: `.github/workflows/deploy.yml` (wrangler `pages deploy dist`)
+- **Secrets**: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (Pages — Edit),
+  optional `MISTRAL_API_KEY`
+
+The site is served from the domain root, so keep links root-relative
+(`/stages/9`) and do not reintroduce a sub-path prefix.
 
 ### Manual Deploy
 

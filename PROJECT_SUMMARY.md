@@ -26,7 +26,7 @@ A Tour de France 2026 analytics dashboard built with
 | `scripts/fetch_tdf_data.py` | Wikipedia wikitext → Parquet (validating parser) |
 | `scripts/train_predictions.py` | Train, cross-validate, predict |
 | `data/` | Committed Parquet data (live / historical / predictions) |
-| `.github/workflows/` | Daily refresh during the race + deploy to Pages |
+| `.github/workflows/` | Daily refresh during the race + deploy to Cloudflare Pages |
 
 ## Daily loop during the race
 

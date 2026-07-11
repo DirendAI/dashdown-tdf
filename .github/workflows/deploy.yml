@@ -1,9 +1,14 @@
 name: Build & Deploy Dashboard
 
-# This workflow builds and deploys the dashboard on:
+# Builds the dashboard and deploys it to Cloudflare Pages on:
 # 1. Push to main branch
 # 2. Manual trigger
-# 3. Called by daily-refresh workflow
+# 3. Called by the daily-refresh workflow
+#
+# Required repository secrets:
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare account id
+#   CLOUDFLARE_API_TOKEN   API token with the "Cloudflare Pages — Edit" permission
+#   MISTRAL_API_KEY        (optional) bakes AI commentary into the build
 
 on:
   push:
@@ -25,19 +30,20 @@ concurrency:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 env:
   PYTHONUNBUFFERED: "1"
+  PAGES_PROJECT: dashdown-tdf
 
 jobs:
-  build:
+  build-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -56,13 +62,13 @@ jobs:
         run: |
           echo "Building dashboard with AI commentary..."
           dashdown build . --out dist
-          
+
           # Verify build succeeded
           if [ ! -d "dist" ] || [ -z "$(ls -A dist)" ]; then
             echo "Error: Build failed or produced empty output"
             exit 1
           fi
-          
+
           echo "✓ Dashboard built successfully"
 
       - name: Gate - Verify Ask/Explain answers baked
@@ -95,22 +101,21 @@ jobs:
           fi
           echo "✓ Charts verified"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Ensure Cloudflare Pages project exists
+        uses: cloudflare/wrangler-action@v3
+        continue-on-error: true  # fails harmlessly when the project already exists
         with:
-          path: dist
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create ${{ env.PAGES_PROJECT }} --production-branch=main
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ env.PAGES_PROJECT }} --branch=main
 
       - name: Output deployment URL
         run: |
-          echo "Dashboard deployed to: ${{ steps.deployment.outputs.page_url }}"
+          echo "Dashboard deployed to: https://${{ env.PAGES_PROJECT }}.pages.dev"
