@@ -228,9 +228,11 @@ LIMIT 10
 SELECT 
     model_name,
     accuracy,
-    mae,
-    r2,
-    f1_score
+    precision,
+    recall,
+    r2_score,
+    rmse,
+    target_variable
 FROM model_performance
 ORDER BY accuracy DESC NULLS LAST
 ```
@@ -241,7 +243,7 @@ ORDER BY accuracy DESC NULLS LAST
 </Grid>
 
 <Table data={model_performance} 
-       columns="model_name,accuracy,mae,r2,f1_score"
+       columns="model_name,accuracy,precision,recall,r2_score,rmse"
        sortBy="accuracy" sortOrder="desc" />
 
 ### 🤖 How the Predictions Work
@@ -370,13 +372,13 @@ ORDER BY stage, win_probability DESC
 ```sql data_freshness connector=main
 SELECT 
     'ProCyclingStats' as source,
-    CURRENT_TIMESTAMP as last_updated,
+    '2026-07-11 08:00:00' as last_updated,
     1260 as record_count,
     0.95 as data_quality_score
 UNION ALL
 SELECT 
     'Cycling Archives' as source,
-    CURRENT_TIMESTAMP as last_updated,
+    '2026-07-11 08:00:00' as last_updated,
     1260 as record_count,
     0.92 as data_quality_score
 ORDER BY last_updated DESC

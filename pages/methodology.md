@@ -150,14 +150,14 @@ SELECT
     6 as years_covered,
     0.95 as completeness_score,
     0.98 as accuracy_score,
-    CURRENT_TIMESTAMP as last_updated
+    '2026-07-11 08:00:00' as last_updated
 UNION ALL
 SELECT 
     'Cycling Archives' as data_source,
     6 as years_covered,
     0.92 as completeness_score,
     0.97 as accuracy_score,
-    CURRENT_TIMESTAMP as last_updated
+    '2026-07-11 08:00:00' as last_updated
 ORDER BY completeness_score DESC
 ```
 
@@ -362,7 +362,7 @@ SELECT
     COUNT(*) as num_riders_scored,
     100 as avg_prediction_time_ms,
     100 * COUNT(*) as total_prediction_time_ms,
-    CURRENT_TIMESTAMP as predictions_generated_at
+    '2026-07-11 08:00:00' as predictions_generated_at
 FROM all_stage_predictions
 GROUP BY stage
 ORDER BY stage
