@@ -12,6 +12,10 @@ header: true
 
 *Live predictions, historical context, and AI-powered insights for every stage of the 2026 Tour de France.*
 
+```sql race_overview connector=main
+SELECT * FROM race_overview
+```
+
 <Grid cols=4>
 <Counter data={race_overview} column="total_distance_km" format="number" label="Total Distance" suffix=" km" />
 <Counter data={race_overview} column="total_elevation_m" format="number" label="Total Climbing" suffix=" m" />
@@ -25,7 +29,7 @@ header: true
 
 ## 🏆 The Battle for Yellow: GC Standings
 
-```sql gc_standings connector=main
+```sql gc_standings connector=live_2026
 SELECT 
     position,
     rider,
@@ -35,7 +39,7 @@ SELECT
     gap,
     age,
     specialist
-FROM live_2026/gc_standings
+FROM gc_standings
 ORDER BY position
 LIMIT 10
 ```
@@ -63,7 +67,7 @@ Mention any surprising omissions from the top 10. Keep it to 3-4 sentences.
 Our ML models have analyzed every rider's characteristics against each stage profile. 
 Here are the predicted favorites for each stage type:
 
-```sql stage_predictions_summary connector=main
+```sql stage_predictions_summary connector=predictions
 SELECT 
     stage,
     stage_type,
@@ -72,7 +76,7 @@ SELECT
     distance_km,
     elevation_m,
     COUNT(*) as num_riders_scored
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 GROUP BY stage, stage_type, start_location, end_location, distance_km, elevation_m
 ORDER BY stage
 ```
@@ -88,12 +92,12 @@ ORDER BY stage
 
 ## 🔥 Today's Stage: Live Prediction
 
-```sql current_stage connector=main
-SELECT * FROM live_2026/stages 
-WHERE stage = (SELECT MIN(stage) FROM live_2026/stages WHERE date >= current_date())
+```sql current_stage connector=live_2026
+SELECT * FROM stages 
+WHERE stage = (SELECT MIN(stage) FROM stages WHERE date >= current_date())
 ```
 
-```sql today_predictions connector=main
+```sql today_predictions connector=predictions
 SELECT 
     rider,
     team,
@@ -104,7 +108,7 @@ SELECT
     predicted_time_gap_seconds,
     is_points_contender,
     is_mountains_contender
-FROM predictions/stage_{{current_stage.stage}}_predictions
+FROM stage_{{current_stage.stage}}_predictions
 ORDER BY win_probability DESC
 LIMIT 15
 ```
@@ -138,7 +142,17 @@ Mention their specialist type and predicted time gap. Keep it to 4 sentences.
 
 ## 📊 Historical Context: How 2026 Compares
 
-```sql historical_comparison connector=main
+```sql historical_comparison connector=live_2026
+SELECT 
+    2026 as year,
+    AVG(distance_km) as avg_stage_distance,
+    SUM(elevation_m) as total_elevation,
+    COUNT(*) as num_stages,
+    COUNT(*) FILTER (WHERE stage_type = 'Mountain') as mountain_stages,
+    COUNT(*) FILTER (WHERE stage_type = 'Flat') as flat_stages,
+    COUNT(*) FILTER (WHERE stage_type = 'Individual Time Trial') as tt_stages
+FROM stages
+UNION ALL
 SELECT 
     year,
     AVG(distance_km) as avg_stage_distance,
@@ -147,11 +161,7 @@ SELECT
     COUNT(*) FILTER (WHERE stage_type = 'Mountain') as mountain_stages,
     COUNT(*) FILTER (WHERE stage_type = 'Flat') as flat_stages,
     COUNT(*) FILTER (WHERE stage_type = 'Individual Time Trial') as tt_stages
-FROM (
-    SELECT * FROM live_2026/stages WHERE year = 2026
-    UNION ALL
-    SELECT * FROM historical/results WHERE year BETWEEN 2020 AND 2025
-)
+FROM historical.results
 GROUP BY year
 ORDER BY year
 ```
@@ -179,7 +189,7 @@ Mention any notable trends. Keep it to 3-4 sentences.
 
 ### 🟢 Points Jersey (Green)
 
-```sql points_jersey_contenders connector=main
+```sql points_jersey_contenders connector=predictions
 SELECT 
     rider,
     team,
@@ -188,7 +198,7 @@ SELECT
     is_points_contender,
     win_probability,
     COUNT(*) as num_stages_with_high_prob
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 WHERE is_points_contender = 1
 GROUP BY rider, team, nationality, specialist, is_points_contender, win_probability
 ORDER BY win_probability DESC, num_stages_with_high_prob DESC
@@ -202,7 +212,7 @@ LIMIT 10
 
 ### ⚪ Mountains Jersey (Polka Dot)
 
-```sql mountains_jersey_contenders connector=main
+```sql mountains_jersey_contenders connector=predictions
 SELECT 
     rider,
     team,
@@ -211,7 +221,7 @@ SELECT
     is_mountains_contender,
     win_probability,
     COUNT(*) as num_mountain_stages_with_high_prob
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 WHERE is_mountains_contender = 1 AND stage_type = 'Mountain'
 GROUP BY rider, team, nationality, specialist, is_mountains_contender, win_probability
 ORDER BY num_mountain_stages_with_high_prob DESC, win_probability DESC
@@ -271,7 +281,7 @@ What are the main limitations of this approach?
 
 Explore predictions for every stage of the 2026 Tour de France:
 
-```sql all_stages connector=main
+```sql all_stages connector=predictions
 SELECT 
     stage,
     date,
@@ -281,7 +291,7 @@ SELECT
     distance_km,
     elevation_m,
     COUNT(*) as num_predictions
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 GROUP BY stage, date, start_location, end_location, stage_type, distance_km, elevation_m
 ORDER BY stage
 ```
@@ -297,7 +307,7 @@ ORDER BY stage
 
 ## 🔍 Deep Dive: Rider Performance Analysis
 
-```sql rider_analysis connector=main
+```sql rider_analysis connector=predictions
 SELECT 
     rider,
     team,
@@ -308,7 +318,7 @@ SELECT
     COUNT(*) as num_stages_with_top5_prob,
     AVG(predicted_gc_position) as avg_predicted_gc,
     MIN(predicted_gc_position) as best_predicted_gc
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 GROUP BY rider, team, nationality, specialist
 ORDER BY avg_win_prob DESC
 LIMIT 20
@@ -333,14 +343,14 @@ Also mention any specialists who excel in one area but not the other.
 
 ### 🏔️ Mountain Stages: Who Will Dominate?
 
-```sql mountain_stage_predictions connector=main
+```sql mountain_stage_predictions connector=predictions
 SELECT 
     stage,
     rider,
     team,
     win_probability,
     predicted_time_gap_seconds
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 WHERE stage_type = 'Mountain' AND win_probability > 0.1
 ORDER BY stage, win_probability DESC
 ```
@@ -352,14 +362,14 @@ ORDER BY stage, win_probability DESC
 
 ### ⏱️ Time Trial Specialists
 
-```sql tt_predictions connector=main
+```sql tt_predictions connector=predictions
 SELECT 
     stage,
     rider,
     team,
     win_probability,
     predicted_time_gap_seconds
-FROM predictions/all_stage_predictions
+FROM all_stage_predictions
 WHERE stage_type IN ('Prologue', 'Individual Time Trial') AND win_probability > 0.05
 ORDER BY stage, win_probability DESC
 ```
