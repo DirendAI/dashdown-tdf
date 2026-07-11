@@ -356,6 +356,11 @@ WHERE stage = CAST('${stage}' AS INTEGER)
 Page **prose is not templated** — to show a value in a sentence, use
 `<Value data={query} column="col" />`, never `{{...}}` placeholders.
 
+**Never put `<Ask>` on a `[param]` page.** Static builds bake ONE answer per
+ask id for the whole template (generated with the first static path's data),
+so all 21 stage pages would show the same — wrong — commentary. Ask belongs
+on regular pages only.
+
 ---
 
 ## 🧪 Testing & Validation

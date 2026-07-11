@@ -78,8 +78,9 @@ LIMIT 15
        empty_message="No prediction for this stage." />
 </Grid>
 
-<Ask data={stage_prediction,stage_info} inline
-     ask="If this stage has prediction rows, preview it in 2-3 sentences (top picks and why the stage type suits them). If the prediction table is empty but there is a winner in the stage info, recap who won instead. Be concrete." />
+<sub>ℹ️ Probabilities come from the stage-winner and stage-podium models —
+cross-validated accuracy and limitations are on the [methodology](/methodology)
+page. Raced stages show no prediction; the model only scores upcoming stages.</sub>
 
 ---
 

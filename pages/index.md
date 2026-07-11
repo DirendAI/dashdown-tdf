@@ -5,7 +5,8 @@ description: >
   Tour de France 2026 dashboard — real standings and stage results so far,
   with ML predictions for the remaining stages, the final GC and the jersey
   competitions. Data refreshes daily during the race.
-width: full
+sidebar_position: 1
+icon: "🚴"
 header: true
 ---
 

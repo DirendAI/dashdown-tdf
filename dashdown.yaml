@@ -1,21 +1,17 @@
 title: "TDF 2026 Analytics Dashboard"
 description: "Live Tour de France 2026 dashboard with ML predictions and AI commentary"
 branding:
-  logo: "/assets/favicon.svg"
-  favicon: "/assets/favicon.svg"
+  logo: "assets/favicon.svg"
+  favicon: "assets/favicon.svg"
+  # Chart series colors, TDF jerseys first: gold (yellow jersey), green
+  # (points), red (polka dot), French blue, then supporting hues. Validated
+  # for lightness band, chroma, CVD separation and >=3:1 contrast on BOTH the
+  # light (#ffffff) and dark (#0f172a) chart surfaces.
+  palette: ["#B08D00", "#0E9159", "#E0454F", "#3D77C2",
+            "#CE4E8A", "#0E95A8", "#B26A21", "#8468CC"]
 
 # Coding-agent guides to keep in sync via `dashdown skill`
 agents: [mistral]
-
-palette:
-  # TDF-themed colors
-  primary: '#FFD700'    # Yellow jersey
-  secondary: '#00A651'  # Green jersey  
-  accent: '#EF3340'     # Red (Points jersey)
-  background: '#FFFFFF'
-  text: '#1a1a1a'
-  muted: '#888888'
-  border: '#E0E0E0'
 
 # Mistral API configuration for AI commentary
 llm:
@@ -23,12 +19,6 @@ llm:
   model: mistral-medium-latest
   api_key: ${MISTRAL_API_KEY}
   timeout: 120
-
-# Chart defaults
-charts:
-  theme: "tdf"
-  default_height: 400
-  default_width: "100%"
 
 # Build settings (deployed at the domain root on Cloudflare Pages)
 build:

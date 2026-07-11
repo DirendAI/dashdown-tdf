@@ -4,6 +4,8 @@ subtitle: All 21 stages — results so far, predictions for what's ahead
 description: >
   Every stage of the 2026 Tour de France: official results for raced stages,
   ML win-probability picks for the upcoming ones. Click a stage for details.
+sidebar_position: 2
+icon: "🗺️"
 header: true
 ---
 
@@ -31,7 +33,7 @@ FROM stages
 ORDER BY stage
 ```
 
-<BarChart data={route_profile} x="stage" y="distance_km" series="stage_type"
+<BarChart data={route_profile} x="stage" y="distance_km" series="stage_type" stacked
           title="The route at a glance — stage distance, coloured by type"
           explain="Where are the remaining mountain stages and the time trial in the final two weeks?" />
 
