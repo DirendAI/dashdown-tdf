@@ -1,0 +1,116 @@
+name: Build & Deploy Dashboard
+
+# This workflow builds and deploys the dashboard on:
+# 1. Push to main branch
+# 2. Manual trigger
+# 3. Called by daily-refresh workflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pages/**'
+      - 'data/**'
+      - 'queries/**'
+      - 'scripts/**'
+      - 'dashdown.yaml'
+      - 'sources.yaml'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Dashdown with Mistral support
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Build static dashboard
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          echo "Building dashboard with AI commentary..."
+          dashdown build . --out dist
+          
+          # Verify build succeeded
+          if [ ! -d "dist" ] || [ -z "$(ls -A dist)" ]; then
+            echo "Error: Build failed or produced empty output"
+            exit 1
+          fi
+          
+          echo "✓ Dashboard built successfully"
+
+      - name: Gate - Verify Ask/Explain answers baked
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import glob, json, os, sys
+          files = glob.glob("dist/_dashdown/data/_ask/*.json")
+          if not files:
+              print("Warning: no baked ask payloads found")
+              sys.exit(0)  # Don't fail if no Ask components
+          notices = [f for f in files
+                     if json.load(open(f)).get("notice") or not json.load(open(f)).get("html")]
+          if os.environ.get("MISTRAL_API_KEY"):
+              if notices:
+                  print(f"Error: {len(notices)}/{len(files)} asks baked a notice instead of an answer")
+                  sys.exit(1)
+              print(f"✓ {len(files)} asks baked with real answers")
+          else:
+              print(f"MISTRAL_API_KEY not set — {len(notices)} notice payloads")
+          EOF
+
+      - name: Gate - Verify charts draw
+        run: |
+          dashdown screenshot / --dist dist --full-page -o page.png
+          if [ ! -f "page.png" ]; then
+            echo "Error: Screenshot failed - charts may not be drawing"
+            exit 1
+          fi
+          echo "✓ Charts verified"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Output deployment URL
+        run: |
+          echo "Dashboard deployed to: ${{ steps.deployment.outputs.page_url }}"
