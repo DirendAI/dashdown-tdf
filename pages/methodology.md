@@ -4,6 +4,8 @@ subtitle: Where the data comes from and how the models work
 description: >
   Data lineage, feature engineering, model design and honest cross-validated
   performance numbers for the TDF 2026 ML dashboard.
+sidebar_position: 3
+icon: "🧪"
 header: true
 ---
 

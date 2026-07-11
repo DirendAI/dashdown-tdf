@@ -1,0 +1,18 @@
+/* TDF theme: yellow-jersey gold as the app accent (nav, links, buttons).
+   Chart series colors live in dashdown.yaml -> branding.palette; the golds
+   here are the same hue stepped per theme so chrome and charts match. */
+
+[data-theme="light"] {
+  --p: 65.7% 0.134 91.1;   /* gold #B08D00 — yellow jersey, legible on white */
+  --pc: 21% 0.04 265;      /* near-black text on the gold accent */
+}
+
+[data-theme="dark"] {
+  --p: 77.9% 0.148 92.0;   /* brighter gold #D9B32B for the dark surface */
+  --pc: 15% 0.02 265;
+}
+
+/* A yellow-jersey ribbon on the active nav item */
+.dashdown-sidenav-link[aria-current="page"] {
+  box-shadow: inset 3px 0 0 0 oklch(var(--p));
+}
