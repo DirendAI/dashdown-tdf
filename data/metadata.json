@@ -1,12 +1,15 @@
 {
-  "last_refreshed": "2026-07-11T15:44:14Z",
+  "last_refreshed": "2026-07-11T17:33:00Z",
   "data_sources": [
-    "ProCyclingStats",
-    "Cycling Archives"
+    "CQ Ranking API",
+    "ProCyclingStats"
   ],
   "refresh_interval": "daily",
   "next_refresh": "2026-07-12T08:00:00Z",
   "current_stage": 12,
   "total_stages": 21,
-  "note": "Live data - Tour de France 2026 in progress"
+  "note": "Live data - Tour de France 2026 Stage 12 completed",
+  "yellow_jersey": "Tadej Pogacar",
+  "green_jersey": "Jasper Philipsen",
+  "polka_dot_jersey": "Jonas Vingegaard"
 }
