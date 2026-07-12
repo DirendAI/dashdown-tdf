@@ -1,5 +1,5 @@
 # Core dependencies
-dashdown-md[mistral,pdf,python,semantic]==0.1.14
+dashdown-md[mistral,pdf,python,semantic]>=0.1.14
 
 # Data processing
 pandas>=2.0.0
