@@ -148,12 +148,30 @@ balanced; this is the headline GC prediction on the dashboard.
 
 ### 6. Jersey projections — expected-points simulation
 
-No black box: projected points = current points + expected finish points over
-the remaining stages, where the expectation combines the two stage models with
-the **real UCI points scales** (flat wins pay 50 green-jersey points, hilly
-30, mountain/ITT 20; mountain-stage winners typically bag ~18 KOM points at
-summit finishes). Intermediate-sprint and breakaway KOM points are *not*
-modelled — the projection is a documented floor, not gospel.
+No black box: projected points = current points + **expected podium points**
++ **expected "unseen" points** over the remaining stages.
+
+- **Podium points** combine the two stage models with the **real UCI points
+  scales** (flat wins pay 50 green-jersey points, hilly 30, mountain/ITT 20;
+  mountain-stage winners typically bag ~18 KOM points at summit finishes).
+- **Unseen points** are everything a finish-position model cannot see: green
+  points scored **mid-stage at the intermediate sprint** (20-17-…-1 for the
+  first 15 through) and at the finish for places 4-15, plus KOM points
+  collected by **breakaways** over climbs. No per-sprint data exists in the
+  source, but the aggregate does: the part of a rider's *current* points
+  total that their observed podium finishes cannot explain must have come
+  from exactly these sources — for the current green-jersey leader that
+  residual is the large majority of his total, because hoovering
+  intermediate sprints *is* his strategy. Each rider's residual rate per
+  stage so far is projected over the remaining stages, with a mountain
+  stage counted as **half** a green opportunity (its intermediate sprint
+  stays contestable from the bunch; its finish points realistically do not).
+
+Assumptions worth knowing: the residual rate assumes riders keep collecting
+these points as they have so far (a mountain-heavy final week makes this
+optimistic for pure sprinters); the classifications source publishes only
+each standing's top 10, so riders outside it carry no residual; and the
+projection is an expectation, not gospel.
 
 ---
 

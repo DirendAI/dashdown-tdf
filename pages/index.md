@@ -275,7 +275,10 @@ SELECT projected_rank, rider,
             THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
             ELSE rider END AS rider_label,
        team, specialist,
-       current_points, projected_additional_points, projected_total_points
+       current_points,
+       projected_podium_points AS from_podium_finishes,
+       projected_other_points  AS from_intermediates_and_placings,
+       projected_total_points
 FROM jersey_projections
 WHERE classification = 'points' AND projected_rank <= 8
 ORDER BY projected_rank
@@ -287,24 +290,33 @@ SELECT projected_rank, rider,
             THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
             ELSE rider END AS rider_label,
        team, specialist,
-       current_points, projected_additional_points, projected_total_points
+       current_points,
+       projected_podium_points AS from_stage_podiums,
+       projected_other_points  AS from_breakaway_climbs,
+       projected_total_points
 FROM jersey_projections
 WHERE classification = 'mountains' AND projected_rank <= 8
 ORDER BY projected_rank
 ```
 
 <Grid cols=2>
-<BarChart data={green_projection} x="rider_label" y="current_points,projected_additional_points" stacked horizontal
+<BarChart data={green_projection} x="rider_label" y="current_points,from_podium_finishes,from_intermediates_and_placings" stacked horizontal
           title="🟢 Green jersey: current + projected points"
-          explain="The green jersey race is tight — who gains the most from the remaining sprint stages?" />
+          explain="The green jersey race is tight — who gains the most from the remaining stages, and how much of it comes from intermediate sprints rather than stage podiums?" />
 
-<BarChart data={polka_projection} x="rider_label" y="current_points,projected_additional_points" stacked horizontal
+<BarChart data={polka_projection} x="rider_label" y="current_points,from_stage_podiums,from_breakaway_climbs" stacked horizontal
           title="🔴 Polka dot: current + projected points"
           explain="Can anyone realistically challenge for the mountains classification given the Alpe d'Huez double ahead?" />
 </Grid>
 
+<sub>🚏 Green-jersey points are also scored **mid-stage** — the intermediate
+sprint pays 20-17-…-1 — and at the finish for places 4-15. Neither comes out
+of the podium models, so the projection adds each rider's *observed* rate of
+those points this Tour (the third bar segment). For the current green leader
+that segment is most of the story.</sub>
+
 <Ask data={green_projection,polka_projection} inline
-     ask="In 3-4 sentences: who is projected to win the green and polka-dot jerseys of the 2026 Tour and how close are those races? Note that the projection adds expected finish points from the stage-winner model to the current standings." />
+     ask="In 3-4 sentences: who is projected to win the green and polka-dot jerseys of the 2026 Tour and how close are those races? Note that the projection adds, to the current standings, expected podium points from the stage models plus each rider's observed rate of intermediate-sprint and minor-placing points (breakaway climb points for the polka dot)." />
 
 ---
 

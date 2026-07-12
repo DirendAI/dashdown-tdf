@@ -72,7 +72,11 @@ with a week of form data).
    says so.
 5. **GC podium** — RandomForestClassifier, P(final podium).
 6. **Jersey projections** — current green/polka-dot points plus expected
-   finish points simulated from models 1-2 with the real UCI points scales.
+   podium points simulated from models 1-2 with the real UCI points scales,
+   plus each rider's observed per-stage rate of the points those models
+   can't see (intermediate sprints, finish places 4-15, breakaway KOM) —
+   inferred as the residual between the rider's current total and their
+   observed podium finishes, projected over the remaining stages.
 
 Run `--train` to see the CV metrics; they are also published to the
 dashboard's methodology page via `data/model_performance.parquet`.

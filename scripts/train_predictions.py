@@ -21,9 +21,13 @@ Models
 4. gc_position    GradientBoostingRegressor   final GC position for riders
                                               in the GC top 10 after stage 8
 5. gc_podium      RandomForestClassifier      P(final GC podium) same input
-6. green/polka    projection                  expected remaining finish points
-                                              from models 1+2, added to current
-                                              standings
+6. green/polka    projection                  expected remaining podium points
+                                              from models 1+2, PLUS each
+                                              rider's observed rate of points
+                                              the models can't see
+                                              (intermediate sprints, finish
+                                              places 4-15, breakaway KOM),
+                                              added to current standings
 
 The classifier and the ranker compete in the same leave-one-year-out CV on
 identical features; whichever ranks stages better (top-1, then top-3 hit rate)
@@ -604,7 +608,6 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
         p_pod = max(row["podium_probability"] - p_win, 0)
         return p_win * pts[0] + p_pod * (pts[1] + pts[2]) / 2
 
-    preds_p = matrix.merge(data.stages[["stage"]], on="stage")
     preds_p = matrix.copy()
     preds_p["exp_points"] = preds_p.apply(expected_finish_points, axis=1)
     exp_green = preds_p.groupby("rider")["exp_points"].sum()
@@ -616,8 +619,58 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
         * KOM_WIN_POINTS[r["stage_type"]] * 0.4, axis=1)
     exp_kom = kom.groupby("rider")["exp_kom"].sum()
 
+    # Points the finish-position models cannot see: green points scored
+    # mid-stage at the intermediate sprint (20-17-…-1) and at the finish for
+    # places 4-15, KOM points collected from breakaways crossing climbs
+    # first. The aggregate is observable per rider: whatever part of the
+    # current points total the observed podium results cannot explain must
+    # have come from those sources. Project each rider's per-opportunity
+    # rate so far over the remaining stages (assumptions on the methodology
+    # page). Only riders in the current top-10 standings carry a residual —
+    # the classifications source publishes the top 10.
+    stages_2026 = data.stages
+    done_mask = stages_2026["completed"].astype(bool)
+    is_tt = stages_2026["stage_type"].str.contains("time trial", case=False)
+    # a mountain stage is ~half a green opportunity: its intermediate sprint
+    # (20 pts max) stays contestable, the bunch-finish points do not
+    green_unit = np.where(is_tt, 0.0,
+                          np.where(stages_2026["stage_type"] == "Mountain",
+                                   0.5, 1.0))
+    green_units_done = float(green_unit[done_mask].sum())
+    green_units_left = float(green_unit[~done_mask].sum())
+
+    pod_so_far = data.results[data.results["position"] <= 3]
+    green_attr = (pod_so_far.apply(
+        lambda r: FINISH_POINTS.get(r["stage_type"], [0, 0, 0])[int(r["position"]) - 1],
+        axis=1).groupby(pod_so_far["rider"]).sum()
+        if len(pod_so_far) else pd.Series(dtype=float))
+
+    kom_so_far = pod_so_far[pod_so_far["stage_type"].isin(KOM_WIN_POINTS)]
+    kom_attr = (kom_so_far.apply(
+        lambda r: KOM_WIN_POINTS[r["stage_type"]] * (1.0 if r["position"] == 1 else 0.4),
+        axis=1).groupby(kom_so_far["rider"]).sum()
+        if len(kom_so_far) else pd.Series(dtype=float))
+    kom_relevant = stages_2026["stage_type"].isin(KOM_WIN_POINTS)
+    kom_units_done = float((done_mask & kom_relevant).sum())
+    kom_units_left = float((~done_mask & kom_relevant).sum())
+
+    def other_points_forward(cls_name: str, attributed: pd.Series,
+                             units_done: float, units_left: float) -> pd.Series:
+        current = data.classifications.query(
+            "classification == @cls_name").set_index("rider")["points"]
+        current = pd.to_numeric(current, errors="coerce").fillna(0.0)
+        residual = (current - attributed.reindex(current.index)
+                    .fillna(0)).clip(lower=0)
+        return residual / max(units_done, 1.0) * units_left
+
+    green_other = other_points_forward(
+        "points", green_attr, green_units_done, green_units_left)
+    kom_other = other_points_forward(
+        "mountains", kom_attr, kom_units_done, kom_units_left)
+
     jerseys = []
-    for cls_name, expected in (("points", exp_green), ("mountains", exp_kom)):
+    for cls_name, expected, other in (("points", exp_green, green_other),
+                                      ("mountains", exp_kom, kom_other)):
         current = data.classifications.query(
             "classification == @cls_name").set_index("rider")["points"]
         riders_union = current.index.union(expected.index)
@@ -625,9 +678,14 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
             "classification": cls_name,
             "rider": riders_union,
             "current_points": [float(current.get(r, 0) or 0) for r in riders_union],
-            "projected_additional_points":
+            "projected_podium_points":
                 [round(float(expected.get(r, 0)), 1) for r in riders_union],
+            "projected_other_points":
+                [round(float(other.get(r, 0)), 1) for r in riders_union],
         })
+        proj["projected_additional_points"] = (
+            proj["projected_podium_points"]
+            + proj["projected_other_points"]).round(1)
         proj["projected_total_points"] = (
             proj["current_points"] + proj["projected_additional_points"]).round(1)
         proj["current_rank"] = (proj["current_points"]
@@ -785,7 +843,7 @@ def main() -> int:
              "top1_rate": None, "top3_rate": None, "auc": None, "log_loss": None,
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": None,
-             "headline": "current points + expected finish points from the two stage models"},
+             "headline": "current points + expected podium points from the stage models + each rider's observed intermediate-sprint/placing rate"},
         ])
         perf["cv_scheme"] = "leave-one-year-out CV, 2020-2025"
         perf["trained_at"] = now
