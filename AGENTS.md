@@ -137,17 +137,20 @@ Connector in parentheses; table name = parquet file stem.
 | `rider_profiles` (live_2026) | 1 row per rider | specialist (derived), career_stage_wins, top10_flat/hilly/mountain/individual |
 | `results` (historical) | stage top-10s + GC-after-stage, 2020-2025 | year, stage, record ('stage_result'/'gc_after_stage'), position, rider, team, stage_type |
 | `final_classifications` (historical) | final top-10s per year | year, classification, rank, rider, team, points/gap_seconds |
-| `stage_predictions` (predictions) | 1 row per (remaining stage × active rider) | stage, rider, team, specialist, win_probability, podium_probability, predicted_rank |
+| `stage_predictions` (predictions) | 1 row per (stage 9-21 × active rider), incl. raced stages | stage, completed, rider, team, specialist, win_probability, podium_probability, predicted_rank |
 | `gc_forecast` (predictions) | current GC top 10 | rider, current_position, current_gap, predicted_final_position, podium_probability |
 | `jersey_projections` (predictions) | top-30 per jersey | classification, rider, current_points, projected_podium_points, projected_other_points, projected_additional_points, projected_total_points, projected_rank |
 | `race_overview` / `model_performance` / `data_freshness` (main) | one-row/state tables | see files |
 
 ### Key Metrics
 
-- **win_probability**: normalised per stage so each stage's probabilities sum to 1
-- **podium_probability**: P(top-3 on the stage) — raw classifier output
-- **predicted_rank**: per-stage ordering from whichever of ranker/classifier
-  won the CV duel (currently the ranker) — can disagree with win_probability
+- **win_probability**: normalised per stage so each stage's probabilities sum
+  to 1; from the selected model regime (currently isotonic-calibrated ranker
+  scores)
+- **podium_probability**: P(top-3 on the stage) from the selected regime;
+  monotone in predicted_rank by construction when the ranker is selected
+- **predicted_rank**: per-stage ordering from whichever regime won the CV
+  duel (currently the ranker); always consistent with the probabilities
 - **predicted_final_position**: rank of the GC position regressor's scores
 - **projected_total_points**: current jersey points + expected podium points
   (stage models) + the rider's observed rate of intermediate-sprint /
@@ -169,10 +172,15 @@ Connector in parentheses; table name = parquet file stem.
 | `gc_podium` | Classification | final podium (0/1) | RandomForest |
 | jersey projections | Simulation | expected points | models 1+2 × UCI points scales |
 
-The stage ranker and stage-winner classifier compete in the same LOYO CV;
-the better ranker of held-out years (top-1, then top-3 hit rate) supplies
-`predicted_rank` (recorded in `models/model_selection.json`, re-decided every
-retrain). Probabilities always come from the calibrated classifiers.
+The stage ranker and stage classifiers compete in the same LOYO CV. If the
+ranker orders held-out years better (top-1, then top-3 hit rate) and its
+scores rank top-3 finishers at least as well as the podium classifier, it
+supplies `predicted_rank` AND the win/podium probabilities (raw scores are
+mapped through isotonic calibrators fitted on its out-of-fold CV scores, so
+percentages are always monotone in rank). Otherwise the classifiers keep the
+whole regime. Decision recorded in `models/model_selection.json`, re-made
+every retrain. Predictions are emitted for raced stages 9+ too (stage pages
+show them next to the official result) — filter with the `completed` flag.
 
 Honest leave-one-year-out CV metrics live in `data/model_performance.parquet`
 and are shown on the dashboard — do not replace them with aspirational numbers.
@@ -237,7 +245,9 @@ SELECT * FROM gc_standings LIMIT 10
 ### Updating Data Daily
 
 The `daily-refresh.yml` workflow:
-- Runs at 08:00 UTC during TDF (July 5-27, 2026)
+- Runs at 08:00, 16:00, 18:00 and 20:00 UTC during TDF (July 4-28, 2026)
+  — the evening passes pick up the day's stage result; no-change runs skip
+  the commit and deploy
 - Fetches latest 2026 data
 - Regenerates all predictions
 - Commits changes to `data/`
@@ -463,8 +473,8 @@ A: Models are pre-trained. Run `python scripts/train_predictions.py --train --pr
 **Q: How do I add AI commentary?**
 A: Add `<Ask data={query} ask="Your question here" />` to any page. Requires `MISTRAL_API_KEY`.
 
-**Q: Why are predictions only updated daily?**
-A: To balance freshness with stability. The TDF moves fast, but daily updates capture the key changes.
+**Q: How often do predictions update?**
+A: Each morning at 08:00 UTC plus evening passes at 16:00/18:00/20:00 UTC, so the day's stage result and refreshed predictions are live the same evening.
 
 **Q: Can I run this without Mistral API key?**
 A: Yes! The dashboard builds without it — `<Ask>` components just show muted notices instead of answers.

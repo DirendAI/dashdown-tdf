@@ -61,18 +61,22 @@ with a week of form data).
 3. **Stage ranker** — XGBRanker (LambdaMART) over the same features and tree
    budget, trained on graded finish positions (win › podium › top-10 › rest)
    with one ranking group per stage, so it learns the ordinal structure the
-   binary targets discard. It competes with the stage-winner classifier in
-   the same CV; whichever ranks held-out years better (top-1, then top-3 hit
-   rate) supplies `predicted_rank` — the choice is written to
-   `models/model_selection.json` and re-made on every retrain. Win/podium
-   probabilities always come from the calibrated classifiers.
+   binary targets discard. It competes with the classifiers in the same CV;
+   if it ranks held-out years better (top-1, then top-3 hit rate) and its
+   scores rank top-3 finishers at least as well as the podium classifier, it
+   supplies `predicted_rank` AND the win/podium probabilities — raw scores
+   are mapped through isotonic calibrators fitted on its out-of-fold CV
+   scores, so percentages are always monotone in the published rank. The
+   choice is written to `models/model_selection.json` and re-made on every
+   retrain.
 4. **Final GC position** — GradientBoostingRegressor for riders in the GC
    top 10 after stage 8. Also reports the "standings freeze" baseline —
    which is genuinely hard to beat with six years of data, and the dashboard
    says so.
 5. **GC podium** — RandomForestClassifier, P(final podium).
 6. **Jersey projections** — current green/polka-dot points plus expected
-   podium points simulated from models 1-2 with the real UCI points scales,
+   podium points simulated from the selected stage model with the real UCI
+   points scales over the stages still to race,
    plus each rider's observed per-stage rate of the points those models
    can't see (intermediate sprints, finish places 4-15, breakaway KOM) —
    inferred as the residual between the rider's current total and their

@@ -29,12 +29,21 @@ Models
                                               places 4-15, breakaway KOM),
                                               added to current standings
 
-The classifier and the ranker compete in the same leave-one-year-out CV on
-identical features; whichever ranks stages better (top-1, then top-3 hit rate)
-supplies `predicted_rank` in the published predictions. Win/podium
-probabilities always come from the classifiers — a LambdaMART score is not a
-probability. The choice is data-driven and re-made on every retrain; both
-scores are published to the dashboard.
+The classifiers and the ranker compete in the same leave-one-year-out CV on
+identical features. If the ranker orders the held-out years better (top-1,
+then top-3 hit rate) and its scores rank top-3 finishers at least as well as
+the podium classifier, it supplies `predicted_rank` AND the win/podium
+probabilities — its raw scores are turned into probabilities by isotonic maps
+fitted on the out-of-fold CV scores, so the published percentages are always
+monotone in the published rank. Otherwise the classifiers keep the whole
+regime. The choice is re-made on every retrain and recorded in
+models/model_selection.json; both models' CV scores are published to the
+dashboard.
+
+Predictions are generated for every stage after the stage-8 anchor, including
+ones already raced — the per-stage pages show the model's pre-stage pick next
+to the official result. The `completed` flag on each prediction row lets the
+dashboard's "next up" / "remaining stages" queries skip raced stages.
 
 Usage
 -----
@@ -59,6 +68,7 @@ from sklearn.ensemble import (
     GradientBoostingRegressor,
     RandomForestClassifier,
 )
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     log_loss,
     mean_absolute_error,
@@ -390,24 +400,23 @@ def _stage_qid(frame: pd.DataFrame) -> pd.Series:
     return frame["year"] * 100 + frame["stage"]
 
 
-def evaluate_stage_ranker(matrix: pd.DataFrame) -> dict:
+def evaluate_stage_ranker(matrix: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     """Same LOYO regime as evaluate_stage_model — held-out year, scored on
     stages 9-21 — but the candidate is a ranker: one score per (stage, rider)
     and top-1/top-3 read straight off the ordering. AUC of the scores against
     the actual winners is rank-based and scale-free, so it is comparable with
-    the classifiers'; log loss is undefined for scores (not probabilities)."""
+    the classifiers'. Also returns the out-of-fold (score, won, top3) rows —
+    the calibration set that turns final-model scores into probabilities."""
     years = sorted(matrix["year"].unique())
     top1_hits, top3_hits, n_stages = 0, 0, 0
-    all_scores, all_true = [], []
+    oof = []
     for held in years:
         train = matrix[matrix["year"] != held].sort_values(["year", "stage"])
         test = matrix[(matrix["year"] == held) & (matrix["stage"] > PIVOT_STAGE)]
         model = make_stage_ranker()
         model.fit(train[FEATURE_COLS], train["rank_grade"], qid=_stage_qid(train))
-        scores = model.predict(test[FEATURE_COLS])
-        test = test.assign(score=scores)
-        all_scores.extend(scores)
-        all_true.extend(test["won_stage"])
+        test = test.assign(score=model.predict(test[FEATURE_COLS]))
+        oof.append(test[["score", "won_stage", "top3_stage"]])
         for s_no, grp in test.groupby("stage"):
             actual = set(grp.loc[grp["won_stage"] == 1, "rider"])
             if not actual:
@@ -416,12 +425,27 @@ def evaluate_stage_ranker(matrix: pd.DataFrame) -> dict:
             n_stages += 1
             top1_hits += int(ranked[0] in actual)
             top3_hits += int(bool(actual & set(ranked[:3])))
-    return {
+    oof_df = pd.concat(oof, ignore_index=True)
+    metrics = {
         "cv_top1_rate": top1_hits / n_stages,
         "cv_top3_rate": top3_hits / n_stages,
-        "cv_auc": roc_auc_score(all_true, all_scores),
+        "cv_auc": roc_auc_score(oof_df["won_stage"], oof_df["score"]),
+        "cv_auc_top3": roc_auc_score(oof_df["top3_stage"], oof_df["score"]),
         "n_eval_stages": n_stages,
     }
+    return metrics, oof_df
+
+
+def fit_score_calibrators(oof: pd.DataFrame) -> dict:
+    """Isotonic maps from ranker score to P(win) / P(top-3), fitted on the
+    out-of-fold CV scores so the final model's scores read as (coarse but
+    honest) probabilities. Monotone by construction, so probabilities always
+    agree with the ranking order."""
+    iso_win = IsotonicRegression(out_of_bounds="clip").fit(
+        oof["score"], oof["won_stage"])
+    iso_pod = IsotonicRegression(out_of_bounds="clip").fit(
+        oof["score"], oof["top3_stage"])
+    return {"win": iso_win, "podium": iso_pod}
 
 
 def make_gc_regressor() -> GradientBoostingRegressor:
@@ -530,33 +554,46 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
     matrix = build_stage_matrix(
         data, CURRENT_YEAR, upto_stage=PIVOT_STAGE, pool=active)
 
-    matrix["win_probability_raw"] = stage_winner.predict_proba(
-        matrix[FEATURE_COLS])[:, 1]
-    matrix["podium_probability"] = stage_podium.predict_proba(
-        matrix[FEATURE_COLS])[:, 1]
-    # exactly one rider wins each stage: normalise per stage
-    matrix["win_probability"] = matrix.groupby("stage")[
-        "win_probability_raw"].transform(lambda p: p / p.sum())
     if rank_source == "ranker":
-        # ordering from LambdaMART; win/podium probabilities stay with the
-        # calibrated classifiers (a ranking score is not a probability)
+        # One model, one story: the ranker's score orders each stage AND —
+        # through the isotonic maps fitted on its out-of-fold CV scores —
+        # supplies P(win)/P(top-3), so the published percentages can never
+        # contradict the published rank.
         ranker = joblib.load(models_dir / "stage_ranker_model.pkl")
+        calibrators = joblib.load(models_dir / "stage_ranker_calibration.pkl")
         matrix["rank_score"] = ranker.predict(matrix[FEATURE_COLS])
+        # floor the calibrated win rate so a stage never normalises over an
+        # all-zero column (isotonic maps hopeless scores to exactly 0)
+        matrix["win_probability_raw"] = np.maximum(
+            calibrators["win"].predict(matrix["rank_score"]), 1e-5)
+        matrix["podium_probability"] = np.clip(
+            calibrators["podium"].predict(matrix["rank_score"]), 0.0, 1.0)
         matrix["predicted_rank"] = matrix.groupby("stage")[
             "rank_score"].rank(ascending=False, method="first").astype(int)
     else:
+        matrix["win_probability_raw"] = stage_winner.predict_proba(
+            matrix[FEATURE_COLS])[:, 1]
+        matrix["podium_probability"] = stage_podium.predict_proba(
+            matrix[FEATURE_COLS])[:, 1]
         matrix["predicted_rank"] = matrix.groupby("stage")[
-            "win_probability"].rank(ascending=False, method="first").astype(int)
-    print(f"  predicted_rank source: {rank_source}")
+            "win_probability_raw"].rank(ascending=False, method="first").astype(int)
+    # exactly one rider wins each stage: normalise per stage
+    matrix["win_probability"] = matrix.groupby("stage")[
+        "win_probability_raw"].transform(lambda p: p / p.sum())
+    print(f"  predicted_rank + probabilities source: {rank_source}")
 
+    # keep predictions for raced stages 9+ (the stage pages show them next to
+    # the official result); the flag lets the dashboard's "next up" and
+    # "remaining stages" queries skip them
     stage_meta = data.stages[[
-        "stage", "date", "start_location", "end_location"]].copy()
+        "stage", "date", "start_location", "end_location", "completed"]].copy()
     preds = matrix.merge(stage_meta, on="stage", how="left").merge(
         profiles[["rider", "team", "country", "age", "specialist"]],
         on="rider", how="left")
     cols = ["stage", "date", "start_location", "end_location", "stage_type",
-            "distance_km", "rider", "team", "country", "age", "specialist",
-            "win_probability", "podium_probability", "predicted_rank"]
+            "distance_km", "completed", "rider", "team", "country", "age",
+            "specialist", "win_probability", "podium_probability",
+            "predicted_rank"]
     preds = preds[cols].sort_values(["stage", "predicted_rank"])
     out_dir.mkdir(parents=True, exist_ok=True)
     preds.to_parquet(out_dir / "stage_predictions.parquet", index=False)
@@ -608,7 +645,10 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
         p_pod = max(row["podium_probability"] - p_win, 0)
         return p_win * pts[0] + p_pod * (pts[1] + pts[2]) / 2
 
-    preds_p = matrix.copy()
+    # expected future points must come from stages still to race — the matrix
+    # also carries raced stages 9+ (kept for the stage pages)
+    remaining = set(data.stages.loc[~data.stages["completed"].astype(bool), "stage"])
+    preds_p = matrix[matrix["stage"].isin(remaining)].copy()
     preds_p["exp_points"] = preds_p.apply(expected_finish_points, axis=1)
     exp_green = preds_p.groupby("rider")["exp_points"].sum()
 
@@ -735,23 +775,29 @@ def main() -> int:
         print("Cross-validating (leave-one-year-out)...")
         winner_metrics = evaluate_stage_model(matrix, "won_stage")
         podium_metrics = evaluate_stage_model(matrix, "top3_stage")
-        ranker_metrics = evaluate_stage_ranker(matrix)
+        ranker_metrics, ranker_oof = evaluate_stage_ranker(matrix)
         gc_reg_metrics, gc_cls_metrics = evaluate_gc_models(gc_matrix)
         print(f"  stage winner: top1 {winner_metrics['cv_top1_rate']:.0%}, "
               f"top3 {winner_metrics['cv_top3_rate']:.0%}, "
               f"AUC {winner_metrics['cv_auc']:.3f}")
         print(f"  stage ranker: top1 {ranker_metrics['cv_top1_rate']:.0%}, "
               f"top3 {ranker_metrics['cv_top3_rate']:.0%}, "
-              f"AUC {ranker_metrics['cv_auc']:.3f}")
-        # The published stage ordering goes to whichever model class ranks the
-        # held-out years better: top-1 hit rate first, top-3 breaks the tie.
-        # A full tie keeps the incumbent classifier (its probabilities are the
-        # calibrated output the rest of the pipeline consumes anyway).
+              f"AUC {ranker_metrics['cv_auc']:.3f} (winner) / "
+              f"{ranker_metrics['cv_auc_top3']:.3f} (top-3, podium clf "
+              f"{podium_metrics['cv_auc']:.3f})")
+        # One model supplies rank, win % and podium % so the published numbers
+        # can never contradict the published order. The ranker takes the role
+        # when it orders the held-out years better (top-1 hit rate, then
+        # top-3) AND its scores rank top-3 finishers at least as well as the
+        # podium classifier (small tolerance for CV noise) — its calibrated
+        # probabilities then feed the jersey projections too. Otherwise the
+        # classifiers keep the whole regime.
         use_ranker = (
             (ranker_metrics["cv_top1_rate"], ranker_metrics["cv_top3_rate"])
-            > (winner_metrics["cv_top1_rate"], winner_metrics["cv_top3_rate"]))
+            > (winner_metrics["cv_top1_rate"], winner_metrics["cv_top3_rate"])
+        ) and ranker_metrics["cv_auc_top3"] >= podium_metrics["cv_auc"] - 0.01
         rank_source = "ranker" if use_ranker else "classifier"
-        print(f"  → published stage ranking comes from the {rank_source}")
+        print(f"  → stage ranking and probabilities come from the {rank_source}")
         print(f"  GC position: MAE {gc_reg_metrics['cv_mae_places']:.2f} places "
               f"(no-change baseline {gc_reg_metrics['baseline_mae_places']:.2f}), "
               f"R2 {gc_reg_metrics['cv_r2']:.2f}")
@@ -770,16 +816,26 @@ def main() -> int:
             n_estimators=300, max_depth=4, random_state=RANDOM_STATE,
             class_weight="balanced").fit(
             gc_matrix[GC_FEATURE_COLS], gc_matrix["final_podium"])
+        calibrators = fit_score_calibrators(ranker_oof)
+        # log loss of the calibrated OOF scores (in-sample for the isotonic
+        # layer itself — read as approximate, like any post-hoc calibration)
+        ranker_log_loss = log_loss(
+            ranker_oof["won_stage"],
+            np.clip(calibrators["win"].predict(ranker_oof["score"]),
+                    1e-6, 1 - 1e-6))
         joblib.dump(m_win, models_dir / "stage_winner_model.pkl")
         joblib.dump(m_pod, models_dir / "stage_podium_model.pkl")
         joblib.dump(m_rank, models_dir / "stage_ranker_model.pkl")
+        joblib.dump(calibrators, models_dir / "stage_ranker_calibration.pkl")
         joblib.dump(m_gc, models_dir / "gc_position_model.pkl")
         joblib.dump(m_gcp, models_dir / "gc_podium_model.pkl")
         # --predict (possibly a separate invocation) reads this to know which
-        # model supplies predicted_rank; the CV numbers make the file auditable
+        # regime supplies predicted_rank and the probabilities; the CV numbers
+        # make the file auditable
         (models_dir / "model_selection.json").write_text(json.dumps({
             "stage_rank_source": rank_source,
             "classifier_cv": {k: round(v, 4) for k, v in winner_metrics.items()},
+            "podium_classifier_cv": {k: round(v, 4) for k, v in podium_metrics.items()},
             "ranker_cv": {k: round(v, 4) for k, v in ranker_metrics.items()},
         }, indent=2))
 
@@ -810,16 +866,16 @@ def main() -> int:
              "top1_rate": round(ranker_metrics["cv_top1_rate"], 3),
              "top3_rate": round(ranker_metrics["cv_top3_rate"], 3),
              "auc": round(ranker_metrics["cv_auc"], 3),
-             "log_loss": None,
+             "log_loss": round(ranker_log_loss, 4),
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": int(len(matrix)),
              "provides_stage_ranking": use_ranker,
              "headline": (
                  f"ordinal-aware challenger: top-1 {ranker_metrics['cv_top1_rate']:.0%} "
                  f"vs classifier {winner_metrics['cv_top1_rate']:.0%} — "
-                 + ("supplies the published stage ranking"
+                 + ("supplies the published ranking and calibrated probabilities"
                     if use_ranker else
-                    "classifier keeps the published ranking"))},
+                    "classifiers keep the published ranking"))},
             {"model_name": "Final GC position", "provides_stage_ranking": False, "algorithm": "GradientBoostingRegressor",
              "target": "final GC position of top-10 after stage 8",
              "top1_rate": None, "top3_rate": None,

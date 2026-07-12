@@ -8,7 +8,8 @@
 
 Real standings and results for the 2026 Tour (currently mid-race), historical
 data for 2020-2025, and ML predictions for the remaining stages, the final GC
-and the jersey competitions — all regenerated daily while the race runs.
+and the jersey competitions — all regenerated several times a day while the
+race runs.
 
 ---
 
@@ -97,8 +98,9 @@ rate, AUC, GC MAE vs the standings-freeze baseline) are published on the
 
 ## 🔄 CI/CD
 
-- **daily-refresh.yml** — daily at 08:00 UTC during the race: fetch → retrain
-  → predict → commit → deploy
+- **daily-refresh.yml** — at 08:00, 16:00, 18:00 and 20:00 UTC during the
+  race: fetch → retrain → predict → commit → deploy (evening passes catch the
+  day's result; no-change runs skip commit and deploy)
 - **deploy.yml** — build & deploy to **Cloudflare Pages**
   (https://dashdown-tdf.pages.dev) on push to `main`, with quality gates
   (baked Ask answers, charts actually draw)

@@ -94,13 +94,13 @@ ORDER BY predicted_rank
        empty_message="No prediction for this stage." />
 </Grid>
 
-<sub>ℹ️ The rank column is the LambdaMART ranking model's ordering (the best
-cross-validated at putting the actual winner on top); win/podium percentages
-are the calibrated probabilities from the stage-winner and stage-podium
-classifiers. The two can disagree — a rider in strong current form can
-out-rank one with a higher peak win probability. Accuracy numbers and
-limitations are on the [methodology](/methodology) page. Raced stages show no
-prediction; the model only scores upcoming stages.</sub>
+<sub>ℹ️ Rank, win % and podium % all come from the LambdaMART ranking model —
+the best cross-validated at putting the actual winner on top — with its
+scores calibrated into probabilities on held-out years (ties in the
+percentages are real; rank breaks them by raw score). Accuracy numbers and
+limitations are on the [methodology](/methodology) page. Stages raced before
+the model's stage-8 anchor show no prediction; a stage raced after it keeps
+its pre-stage prediction here, next to the official result above.</sub>
 
 ---
 
