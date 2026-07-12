@@ -52,7 +52,7 @@ SELECT source, url, last_fetched, license FROM data_freshness
 
 ## 🤖 The models
 
-Four scikit-learn models plus one simulation, all trained by
+Five models plus one simulation, all trained by
 `scripts/train_predictions.py` on the 2020-2025 results. Features are built
 **only from information available before the stage being predicted** — a
 rider's career record in previous Tours and their form in the current Tour up
@@ -87,7 +87,41 @@ probability is distributed across the peloton.
 
 Feeds the jersey projections (a rider doesn't need to win to score points).
 
-### 3. Final GC position — `GradientBoostingRegressor`
+### 3. Stage ranker — `XGBRanker` (LambdaMART)
+
+Binary win/top-3 targets throw away the **ordinal structure** of a stage
+result — 2nd and 15th are both just "didn't win". The ranker learns a
+per-stage *ordering* of all riders directly, trained on graded finish
+positions (win › podium › top-10 › everyone else, one ranking group per
+stage) over exactly the same features and the same tree budget as the
+classifier, so the cross-validation below is a fair model-class comparison,
+not a tuning contest.
+
+```sql ranking_duel connector=main
+SELECT model_name, ROUND(top1_rate * 100, 1) AS top1_pct,
+       ROUND(top3_rate * 100, 1) AS top3_pct, auc,
+       provides_stage_ranking
+FROM model_performance
+WHERE model_name IN ('Stage winner', 'Stage ranker')
+```
+
+<Table data={ranking_duel}
+       format="top1_pct=percent,top3_pct=percent"
+       title="Classifier vs ranker — same features, same LOYO CV, scored on stages 9-21" />
+
+The two compete on every retrain and **whichever ranks the held-out years
+better (top-1 hit rate, then top-3) supplies the published `predicted_rank`**;
+a tie keeps the classifier. In a paired per-stage comparison the ranker
+currently picks the winner on 10 of the 13 stages where the two disagree
+(one-sided sign test p ≈ 0.05) — so the ranking you see on the dashboard is
+the ranker's. Win and podium **percentages always come from the calibrated
+classifiers** (a LambdaMART score is not a probability), which is why a
+rider's rank and win % can occasionally disagree: the ranker rewards current
+consistency (e.g. a sprinter placing on every flat stage this Tour), the
+winner classifier rewards career peak wins. Both readings are shown so the
+disagreement is visible instead of hidden.
+
+### 4. Final GC position — `GradientBoostingRegressor`
 
 For riders in the GC top 10 after stage 8: predict their final position in
 Paris. Features: current gap and position, what remains of the route
@@ -107,12 +141,12 @@ SELECT mae_places, baseline_mae_places FROM model_performance
 WHERE model_name = 'Final GC position'
 ```
 
-### 4. GC podium — `RandomForestClassifier`
+### 5. GC podium — `RandomForestClassifier`
 
 Same inputs, binary target *finishes on the final podium*. Class-weight
 balanced; this is the headline GC prediction on the dashboard.
 
-### 5. Jersey projections — expected-points simulation
+### 6. Jersey projections — expected-points simulation
 
 No black box: projected points = current points + expected finish points over
 the remaining stages, where the expectation combines the two stage models with

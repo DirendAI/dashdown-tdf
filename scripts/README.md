@@ -43,7 +43,7 @@ data/
 │                                # final_classifications
 └── predictions/                 # stage_predictions, gc_forecast,
                                  # jersey_projections
-models/                          # trained sklearn models (gitignored)
+models/                          # trained models + model_selection.json (gitignored)
 ```
 
 ## The models
@@ -58,12 +58,20 @@ with a week of form data).
    Features: stage type/distance, rider career + current-tour form, and
    explicit rider-x-stage-type interaction counts.
 2. **Stage podium** — same features, P(top-3 on the stage).
-3. **Final GC position** — GradientBoostingRegressor for riders in the GC
+3. **Stage ranker** — XGBRanker (LambdaMART) over the same features and tree
+   budget, trained on graded finish positions (win › podium › top-10 › rest)
+   with one ranking group per stage, so it learns the ordinal structure the
+   binary targets discard. It competes with the stage-winner classifier in
+   the same CV; whichever ranks held-out years better (top-1, then top-3 hit
+   rate) supplies `predicted_rank` — the choice is written to
+   `models/model_selection.json` and re-made on every retrain. Win/podium
+   probabilities always come from the calibrated classifiers.
+4. **Final GC position** — GradientBoostingRegressor for riders in the GC
    top 10 after stage 8. Also reports the "standings freeze" baseline —
    which is genuinely hard to beat with six years of data, and the dashboard
    says so.
-4. **GC podium** — RandomForestClassifier, P(final podium).
-5. **Jersey projections** — current green/polka-dot points plus expected
+5. **GC podium** — RandomForestClassifier, P(final podium).
+6. **Jersey projections** — current green/polka-dot points plus expected
    finish points simulated from models 1-2 with the real UCI points scales.
 
 Run `--train` to see the CV metrics; they are also published to the

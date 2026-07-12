@@ -58,7 +58,7 @@ ORDER BY stage
 
 ## 🔮 Still to come — the model's picks
 
-*Click any row for the full top-15 prediction.*
+*Click any row for the model's full ranking of every rider on that stage.*
 
 ```sql upcoming_stages connector=predictions
 SELECT stage, date,

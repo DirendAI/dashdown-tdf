@@ -45,7 +45,11 @@ ORDER BY position
 ```
 
 ```sql gc_gaps connector=live_2026
-SELECT rider, gap_minutes
+-- rider_label: initial + surname, so names fit next to horizontal bars
+SELECT CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       gap_minutes
 FROM gc_standings
 ORDER BY position
 ```
@@ -54,7 +58,7 @@ ORDER BY position
 <Table data={gc_standings}
        sort="position asc" title="General classification (top 10)" />
 
-<BarChart data={gc_gaps} x="rider" y="gap_minutes" horizontal
+<BarChart data={gc_gaps} x="rider_label" y="gap_minutes" horizontal
           title="Minutes behind Tadej Pogačar"
           explain="Who is still within realistic striking distance of the yellow jersey, and who has already lost the Tour?" />
 </Grid>
@@ -96,24 +100,32 @@ ORDER BY stage
        sort="stage asc" title="Completed stages" row_link="/stages/{stage}" />
 
 ```sql points_standings connector=live_2026
-SELECT rank, rider, team, points
+SELECT rank,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       team, points
 FROM classifications
 WHERE classification = 'points' AND rank <= 10
 ORDER BY rank
 ```
 
 ```sql kom_standings connector=live_2026
-SELECT rank, rider, team, points
+SELECT rank,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       team, points
 FROM classifications
 WHERE classification = 'mountains' AND rank <= 10
 ORDER BY rank
 ```
 
 <Grid cols=2>
-<BarChart data={points_standings} x="rider" y="points"
+<BarChart data={points_standings} x="rider_label" y="points" horizontal
           title="🟢 Points classification (green jersey)"
           explain="Mads Pedersen leads on points — which sprinters are his closest threats?" />
-<BarChart data={kom_standings} x="rider" y="points"
+<BarChart data={kom_standings} x="rider_label" y="points" horizontal
           title="🔴 Mountains classification (polka dot)"
           explain="How dominant is the mountains classification leader so far?" />
 </Grid>
@@ -135,7 +147,18 @@ SELECT predicted_rank AS rank, rider, team, specialist,
 FROM stage_predictions
 WHERE stage = (SELECT MIN(stage) FROM stage_predictions)
 ORDER BY predicted_rank
-LIMIT 12
+```
+
+```sql next_stage_top10 connector=predictions
+SELECT predicted_rank AS rank,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       ROUND(win_probability * 100, 1) AS win_pct
+FROM stage_predictions
+WHERE stage = (SELECT MIN(stage) FROM stage_predictions)
+  AND predicted_rank <= 10
+ORDER BY predicted_rank
 ```
 
 <Grid cols=3>
@@ -145,15 +168,18 @@ LIMIT 12
 </Grid>
 
 <Grid cols=2>
-<BarChart data={next_stage_favorites} x="rider" y="win_pct" horizontal
+<BarChart data={next_stage_top10} x="rider_label" y="win_pct" horizontal
           format="percent"
-          title="Model win probability — next stage"
+          title="Model win probability — top 10 favourites"
           explain="Who does the model favour for this stage profile and why might that be?" />
 
 <Table data={next_stage_favorites}
        format="win_pct=percent,podium_pct=percent"
-       sort="rank asc" title="Top 12 picks" />
+       sort="rank asc" page-size="10" search limit="200"
+       title="Every rider, ranked by the model" />
 </Grid>
+
+<sub>The table ranks the **full startlist** for this stage — page through or search for any rider. The chart shows the first page's top 10. **Rank and win % can disagree**: the ordering comes from a ranking model (LambdaMART) that weighs current-tour form and full finish-order structure, while the percentages are the calibrated win/podium probabilities from the classifier — see the [methodology](/methodology).</sub>
 
 <Ask data={next_stage_favorites,next_stage_info} inline
      ask="Preview the next stage of the 2026 Tour using the model's favourites: name the top 3 picks, their specialist profiles, and what kind of finish the stage type suggests. 3-4 sentences." />
@@ -162,21 +188,30 @@ LIMIT 12
 
 ## 🎯 Stage-by-Stage Predictions for the Rest of the Tour
 
-```sql prediction_heatmap connector=predictions
-SELECT p.stage, p.rider, ROUND(p.win_probability * 100, 1) AS win_pct
-FROM stage_predictions p
-WHERE p.rider IN (
-    SELECT rider FROM stage_predictions
-    GROUP BY rider
-    HAVING MAX(win_probability) >= 0.05
+*Every rider's win probability (%) on every remaining stage — one column per
+stage, shaded per column so each stage's favourites stand out. Search for any
+rider, or sort by a stage's column.*
+
+```sql rider_stage_matrix connector=predictions
+WITH base AS (
+    SELECT rider, specialist,
+           'S' || LPAD(CAST(stage AS VARCHAR), 2, '0') AS stage_col,
+           ROUND(win_probability * 100, 1) AS win_pct
+    FROM stage_predictions
+),
+peak AS (
+    SELECT rider, MAX(win_pct) AS best_stage_pct FROM base GROUP BY rider
 )
-ORDER BY p.stage, p.win_probability DESC
+SELECT p.rider, b.specialist, p.best_stage_pct, pv.* EXCLUDE (rider)
+FROM peak p
+JOIN (PIVOT base ON stage_col USING SUM(win_pct) GROUP BY rider) pv USING (rider)
+JOIN (SELECT DISTINCT rider, specialist FROM base) b USING (rider)
+ORDER BY p.best_stage_pct DESC
 ```
 
-<HeatmapChart data={prediction_heatmap} x="stage" y="rider" value="win_pct"
-              title="Win probability (%) per rider per remaining stage"
-              height="460"
-              explain="Which riders' chances are concentrated on specific stages, and who is a threat everywhere?" />
+<Table data={rider_stage_matrix} heatmap
+       sort="best_stage_pct desc" page-size="15" search limit="200"
+       title="Win probability (%) — all riders, all remaining stages" />
 
 ```sql remaining_stage_picks connector=predictions
 SELECT stage, date,
@@ -194,7 +229,7 @@ ORDER BY stage
        sort="stage asc" title="The model's pick for every remaining stage"
        row_link="/stages/{stage}" />
 
-<sub>💡 Click any row for the full per-stage prediction breakdown.</sub>
+<sub>💡 Click any row for the full per-stage breakdown — every rider's rank, win and podium probability. The pick is the ranking model's #1; its win % is the classifier's calibrated probability, so a consistent placer can out-rank a rider with a higher peak win % (e.g. on sprint stages).</sub>
 
 ---
 
@@ -208,12 +243,21 @@ FROM gc_forecast
 ORDER BY predicted_final_position
 ```
 
+```sql gc_forecast_chart connector=predictions
+SELECT CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       ROUND(podium_probability * 100, 1) AS podium_pct
+FROM gc_forecast
+ORDER BY predicted_final_position
+```
+
 <Grid cols=2>
 <Table data={gc_forecast}
        format="podium_pct=percent"
        sort="predicted_final asc" title="Predicted final GC (riders currently in the top 10)" />
 
-<BarChart data={gc_forecast} x="rider" y="podium_pct" horizontal
+<BarChart data={gc_forecast_chart} x="rider_label" y="podium_pct" horizontal
           format="percent"
           title="Probability of finishing on the final podium in Paris"
           explain="Which riders outside the current top 3 does the model give a real podium chance, and who is expected to fade?" />
@@ -226,7 +270,11 @@ ORDER BY predicted_final_position
 ## 👕 Jersey Projections — Who Wins in Paris?
 
 ```sql green_projection connector=predictions
-SELECT projected_rank, rider, team, specialist,
+SELECT projected_rank, rider,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       team, specialist,
        current_points, projected_additional_points, projected_total_points
 FROM jersey_projections
 WHERE classification = 'points' AND projected_rank <= 8
@@ -234,7 +282,11 @@ ORDER BY projected_rank
 ```
 
 ```sql polka_projection connector=predictions
-SELECT projected_rank, rider, team, specialist,
+SELECT projected_rank, rider,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       team, specialist,
        current_points, projected_additional_points, projected_total_points
 FROM jersey_projections
 WHERE classification = 'mountains' AND projected_rank <= 8
@@ -242,11 +294,11 @@ ORDER BY projected_rank
 ```
 
 <Grid cols=2>
-<BarChart data={green_projection} x="rider" y="current_points,projected_additional_points" stacked
+<BarChart data={green_projection} x="rider_label" y="current_points,projected_additional_points" stacked horizontal
           title="🟢 Green jersey: current + projected points"
           explain="The green jersey race is tight — who gains the most from the remaining sprint stages?" />
 
-<BarChart data={polka_projection} x="rider" y="current_points,projected_additional_points" stacked
+<BarChart data={polka_projection} x="rider_label" y="current_points,projected_additional_points" stacked horizontal
           title="🔴 Polka dot: current + projected points"
           explain="Can anyone realistically challenge for the mountains classification given the Alpe d'Huez double ahead?" />
 </Grid>
@@ -300,7 +352,11 @@ ORDER BY year DESC
 <Table data={champions} sort="year desc" title="Jersey winners by year" />
 
 ```sql top_stage_winners connector=historical
-SELECT rider, COUNT(*) AS stage_wins
+SELECT rider,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       COUNT(*) AS stage_wins
 FROM results
 WHERE record = 'stage_result' AND position = 1
 GROUP BY rider
@@ -316,7 +372,7 @@ ORDER BY year, stage_type
 ```
 
 <Grid cols=2>
-<BarChart data={top_stage_winners} x="rider" y="stage_wins" horizontal
+<BarChart data={top_stage_winners} x="rider_label" y="stage_wins" horizontal
           title="Most stage wins, 2020-2025"
           explain="Pogačar's stage-win count towers over everyone — put it in context." />
 
@@ -342,7 +398,7 @@ SELECT ROUND(top1_rate * 100, 1) AS top1_pct,
        ROUND(top3_rate * 100, 1) AS top3_pct,
        auc
 FROM model_performance
-WHERE model_name = 'Stage winner'
+WHERE provides_stage_ranking
 ```
 
 <Grid cols=3>
@@ -354,7 +410,7 @@ WHERE model_name = 'Stage winner'
 <Table data={model_performance}
        title="All models — leave-one-year-out cross-validation, scored on stages 9-21" />
 
-<sub>🧪 Tour de France stages are genuinely hard to predict — long breakaways decide many of them. These numbers are cross-validated on held-out years, not cherry-picked. Full details on the [methodology page](/methodology).</sub>
+<sub>🧪 Tour de France stages are genuinely hard to predict — long breakaways decide many of them. These numbers are cross-validated on held-out years, not cherry-picked. The headline KPIs belong to whichever model currently supplies the published stage ranking — the classifier and a LambdaMART ranker compete for that role on every retrain. Full details on the [methodology page](/methodology).</sub>
 
 ---
 
