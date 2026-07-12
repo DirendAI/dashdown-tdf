@@ -4,7 +4,7 @@ subtitle: Live data & machine-learning predictions
 description: >
   Tour de France 2026 dashboard — real standings and stage results so far,
   with ML predictions for the remaining stages, the final GC and the jersey
-  competitions. Data refreshes daily during the race.
+  competitions. Data refreshes several times a day during the race.
 sidebar_position: 1
 icon: "🚴"
 header: true
@@ -32,7 +32,7 @@ SELECT * FROM race_overview
 <Counter data={race_overview} column="white_jersey" label="⚪ White Jersey" />
 </Grid>
 
-<sub>📊 **Data**: Wikipedia (cites letour.fr / Tissot timing), refreshed daily at 08:00 UTC | 🤖 **ML**: trained on 2020-2025 + this year's form | ✨ **AI commentary**: baked at build time</sub>
+<sub>📊 **Data**: Wikipedia (cites letour.fr / Tissot timing), refreshed each morning and again after each stage finishes | 🤖 **ML**: trained on 2020-2025 + this year's form | ✨ **AI commentary**: baked at build time</sub>
 
 ---
 
@@ -137,7 +137,7 @@ ORDER BY rank
 ```sql next_stage_info connector=predictions
 SELECT DISTINCT stage, date, start_location, end_location, stage_type, distance_km
 FROM stage_predictions
-WHERE stage = (SELECT MIN(stage) FROM stage_predictions)
+WHERE stage = (SELECT MIN(stage) FROM stage_predictions WHERE NOT completed)
 ```
 
 ```sql next_stage_favorites connector=predictions
@@ -145,7 +145,7 @@ SELECT predicted_rank AS rank, rider, team, specialist,
        ROUND(win_probability * 100, 1)    AS win_pct,
        ROUND(podium_probability * 100, 1) AS podium_pct
 FROM stage_predictions
-WHERE stage = (SELECT MIN(stage) FROM stage_predictions)
+WHERE stage = (SELECT MIN(stage) FROM stage_predictions WHERE NOT completed)
 ORDER BY predicted_rank
 ```
 
@@ -156,7 +156,7 @@ SELECT predicted_rank AS rank,
             ELSE rider END AS rider_label,
        ROUND(win_probability * 100, 1) AS win_pct
 FROM stage_predictions
-WHERE stage = (SELECT MIN(stage) FROM stage_predictions)
+WHERE stage = (SELECT MIN(stage) FROM stage_predictions WHERE NOT completed)
   AND predicted_rank <= 10
 ORDER BY predicted_rank
 ```
@@ -179,7 +179,7 @@ ORDER BY predicted_rank
        title="Every rider, ranked by the model" />
 </Grid>
 
-<sub>The table ranks the **full startlist** for this stage — page through or search for any rider. The chart shows the first page's top 10. **Rank and win % can disagree**: the ordering comes from a ranking model (LambdaMART) that weighs current-tour form and full finish-order structure, while the percentages are the calibrated win/podium probabilities from the classifier — see the [methodology](/methodology).</sub>
+<sub>The table ranks the **full startlist** for this stage — page through or search for any rider. The chart shows the first page's top 10. Rank, win % and podium % all come from one model: a LambdaMART ranker whose scores are calibrated into probabilities on held-out years — see the [methodology](/methodology). Ties in the percentages are real (the calibration is deliberately coarse); the rank breaks them by the model's raw score.</sub>
 
 <Ask data={next_stage_favorites,next_stage_info} inline
      ask="Preview the next stage of the 2026 Tour using the model's favourites: name the top 3 picks, their specialist profiles, and what kind of finish the stage type suggests. 3-4 sentences." />
@@ -198,6 +198,7 @@ WITH base AS (
            'S' || LPAD(CAST(stage AS VARCHAR), 2, '0') AS stage_col,
            ROUND(win_probability * 100, 1) AS win_pct
     FROM stage_predictions
+    WHERE NOT completed
 ),
 peak AS (
     SELECT rider, MAX(win_pct) AS best_stage_pct FROM base GROUP BY rider
@@ -220,7 +221,7 @@ SELECT stage, date,
        rider AS model_pick,
        ROUND(win_probability * 100, 1) AS win_pct
 FROM stage_predictions
-WHERE predicted_rank = 1
+WHERE predicted_rank = 1 AND NOT completed
 ORDER BY stage
 ```
 
@@ -229,7 +230,7 @@ ORDER BY stage
        sort="stage asc" title="The model's pick for every remaining stage"
        row_link="/stages/{stage}" />
 
-<sub>💡 Click any row for the full per-stage breakdown — every rider's rank, win and podium probability. The pick is the ranking model's #1; its win % is the classifier's calibrated probability, so a consistent placer can out-rank a rider with a higher peak win % (e.g. on sprint stages).</sub>
+<sub>💡 Click any row for the full per-stage breakdown — every rider's rank, win and podium probability. Once a stage is raced it drops out of this list, but its page keeps the model's pre-stage prediction next to the official result.</sub>
 
 ---
 
@@ -329,6 +330,7 @@ SELECT rider, team, specialist,
        ROUND(AVG(podium_probability) * 100, 1) AS avg_podium_pct,
        COUNT(*) FILTER (WHERE predicted_rank <= 5) AS stages_in_top5_picks
 FROM stage_predictions
+WHERE NOT completed
 GROUP BY rider, team, specialist
 HAVING MAX(win_probability) >= 0.02
 ORDER BY avg_win_pct DESC

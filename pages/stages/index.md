@@ -67,7 +67,7 @@ SELECT stage, date,
        rider AS model_pick,
        ROUND(win_probability * 100, 1) AS win_pct
 FROM stage_predictions
-WHERE predicted_rank = 1
+WHERE predicted_rank = 1 AND NOT completed
 ORDER BY stage
 ```
 

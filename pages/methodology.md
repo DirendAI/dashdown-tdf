@@ -109,17 +109,24 @@ WHERE model_name IN ('Stage winner', 'Stage ranker')
        format="top1_pct=percent,top3_pct=percent"
        title="Classifier vs ranker — same features, same LOYO CV, scored on stages 9-21" />
 
-The two compete on every retrain and **whichever ranks the held-out years
-better (top-1 hit rate, then top-3) supplies the published `predicted_rank`**;
-a tie keeps the classifier. In a paired per-stage comparison the ranker
-currently picks the winner on 10 of the 13 stages where the two disagree
-(one-sided sign test p ≈ 0.05) — so the ranking you see on the dashboard is
-the ranker's. Win and podium **percentages always come from the calibrated
-classifiers** (a LambdaMART score is not a probability), which is why a
-rider's rank and win % can occasionally disagree: the ranker rewards current
-consistency (e.g. a sprinter placing on every flat stage this Tour), the
-winner classifier rewards career peak wins. Both readings are shown so the
-disagreement is visible instead of hidden.
+The two compete on every retrain: the ranker takes over when it **orders the
+held-out years better (top-1 hit rate, then top-3)** *and* its scores rank
+top-3 finishers at least as well as the podium classifier — currently it
+does both (top-3 AUC 0.778 vs 0.776; in a paired per-stage comparison it
+picks the winner on 10 of the 13 stages where the two disagree, one-sided
+sign test p ≈ 0.05). A tie keeps the classifiers.
+
+When the ranker is in charge it supplies **rank, win % and podium % from one
+score**: a raw LambdaMART score is not a probability, so the scores are
+passed through isotonic maps fitted on the ranker's own out-of-fold CV
+predictions (score → observed win rate / top-3 rate on held-out years), and
+the win side is then normalised per stage so each stage sums to one winner —
+the same normalisation the classifier pipeline used. Because isotonic maps
+are monotone, the published percentages can never contradict the published
+rank. The calibration is deliberately coarse — with 126 winners in the data
+it is a step function, so several riders in a stage often share exactly the
+same percentage; those ties are honest, and the rank breaks them by the
+model's raw score.
 
 ### 4. Final GC position — `GradientBoostingRegressor`
 
@@ -151,9 +158,11 @@ balanced; this is the headline GC prediction on the dashboard.
 No black box: projected points = current points + **expected podium points**
 + **expected "unseen" points** over the remaining stages.
 
-- **Podium points** combine the two stage models with the **real UCI points
-  scales** (flat wins pay 50 green-jersey points, hilly 30, mountain/ITT 20;
-  mountain-stage winners typically bag ~18 KOM points at summit finishes).
+- **Podium points** combine the selected stage model's win/podium
+  probabilities (currently the calibrated ranker — see model 3) with the
+  **real UCI points scales** (flat wins pay 50 green-jersey points, hilly 30,
+  mountain/ITT 20; mountain-stage winners typically bag ~18 KOM points at
+  summit finishes), summed over the stages **still to race**.
 - **Unseen points** are everything a finish-position model cannot see: green
   points scored **mid-stage at the intermediate sprint** (20-17-…-1 for the
   first 15 through) and at the finish for places 4-15, plus KOM points
@@ -226,4 +235,6 @@ dashdown serve .                                         # this dashboard
 ```
 
 Every model, metric and prediction on this site regenerates from those three
-commands. During the race a GitHub Action runs them daily at 08:00 UTC.
+commands. During the race a GitHub Action runs them each morning at 08:00 UTC
+and again at 16:00 / 18:00 / 20:00 UTC, so the day's result is on the
+dashboard the same evening.

@@ -1,13 +1,17 @@
 name: Daily TDF Data Refresh & Predictions
 
-# Runs daily at 08:00 UTC during the Tour de France (July 4-26, 2026) to fetch
-# the latest results from Wikipedia, retrain the models and regenerate
-# predictions, then deploy the rebuilt dashboard.
+# Fetches the latest results from Wikipedia, retrains the models, regenerates
+# predictions and deploys the rebuilt dashboard. Runs each morning AND three
+# times in the evening during the Tour: stages finish ~15:00-17:30 UTC and
+# Wikipedia is updated within an hour or two, so the evening passes pick up
+# the day's result the same day instead of leaving the dashboard a stage
+# behind until the next morning. A pass with no data changes commits nothing.
 
 on:
   schedule:
-    # Daily at 08:00 UTC during TDF 2026 (and a few days after Paris)
-    - cron: "0 8 4-28 7 *"
+    # 08:00 morning baseline + evening passes, during TDF 2026 (and a few
+    # days after Paris)
+    - cron: "0 8,16,18,20 4-28 7 *"
   workflow_dispatch:
     inputs:
       force:
@@ -29,6 +33,8 @@ jobs:
   refresh-data:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      data_changed: ${{ steps.commit.outputs.changed }}
 
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +91,7 @@ jobs:
 
       - name: Commit and push data updates
         if: steps.check-tdf.outputs.should_skip != 'true'
+        id: commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -92,15 +99,20 @@ jobs:
           git add data/
           if git diff --cached --quiet; then
             echo "No data changes to commit"
+            echo "changed=false" >> $GITHUB_OUTPUT
           else
-            git commit -m "data: daily refresh $(date -u +%F)"
+            git commit -m "data: refresh $(date -u +'%F %H:%M UTC')"
             git push origin main
+            echo "changed=true" >> $GITHUB_OUTPUT
             echo "✓ Data updates committed and pushed"
           fi
 
+  # Deploy only when the refresh actually changed data — the evening passes
+  # before a stage result lands on Wikipedia are no-ops. Code changes deploy
+  # via deploy.yml's own push trigger.
   build-deploy:
     needs: refresh-data
-    if: needs.refresh-data.result == 'success'
+    if: needs.refresh-data.result == 'success' && needs.refresh-data.outputs.data_changed == 'true'
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
     permissions:
