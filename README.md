@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/DirendAI/dashdown-tdf/actions/workflows/deploy.yml/badge.svg)](https://github.com/DirendAI/dashdown-tdf/actions/workflows/deploy.yml)
 [![Dashdown](https://img.shields.io/badge/built%20with-Dashdown-000000.svg)](https://github.com/DirendAI/dashdown)
-[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Real standings and results for the 2026 Tour (currently mid-race), historical
 data for 2020-2025, and ML predictions for the remaining stages, the final GC
@@ -113,7 +113,7 @@ Repository secrets used by CI:
 
 ## 📄 License
 
-AGPL-3.0-or-later — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 

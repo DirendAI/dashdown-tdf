@@ -12,12 +12,29 @@ Models
 ------
 1. stage_winner   GradientBoostingClassifier  P(rider wins a given stage)
 2. stage_podium   GradientBoostingClassifier  P(rider finishes top-3 on stage)
-3. gc_position    GradientBoostingRegressor   final GC position for riders
+3. stage_ranker   XGBRanker (LambdaMART)      per-stage ordering of all riders,
+                                              trained on graded finish positions
+                                              (win > podium > top-10 > rest) so
+                                              the ordinal structure is learned
+                                              directly instead of via binary
+                                              targets
+4. gc_position    GradientBoostingRegressor   final GC position for riders
                                               in the GC top 10 after stage 8
-4. gc_podium      RandomForestClassifier      P(final GC podium) same input
-5. green/polka    projection                  expected remaining finish points
-                                              from models 1+2, added to current
-                                              standings
+5. gc_podium      RandomForestClassifier      P(final GC podium) same input
+6. green/polka    projection                  expected remaining podium points
+                                              from models 1+2, PLUS each
+                                              rider's observed rate of points
+                                              the models can't see
+                                              (intermediate sprints, finish
+                                              places 4-15, breakaway KOM),
+                                              added to current standings
+
+The classifier and the ranker compete in the same leave-one-year-out CV on
+identical features; whichever ranks stages better (top-1, then top-3 hit rate)
+supplies `predicted_rank` in the published predictions. Win/podium
+probabilities always come from the classifiers — a LambdaMART score is not a
+probability. The choice is data-driven and re-made on every retrain; both
+scores are published to the dashboard.
 
 Usage
 -----
@@ -29,6 +46,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +65,7 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
+from xgboost import XGBRanker
 
 RANDOM_STATE = 42
 CURRENT_YEAR = 2026
@@ -199,6 +218,8 @@ def build_stage_matrix(data: TDFData, year: int, upto_stage: int | None = None,
             year_results.query("stage == @s_no and position == 1")["rider"])
         stage_podium = set(
             year_results.query("stage == @s_no and position <= 3")["rider"])
+        stage_positions = (year_results.query("stage == @s_no")
+                           .set_index("rider")["position"].to_dict())
 
         for rider in pool_riders:
             rows.append({
@@ -231,8 +252,25 @@ def build_stage_matrix(data: TDFData, year: int, upto_stage: int | None = None,
                 "tour_top10_same_type": int(form_top10.get(f"tour_top10_{type_key}", pd.Series()).get(rider, 0)),
                 "won_stage": int(rider in stage_winners),
                 "top3_stage": int(rider in stage_podium),
+                # graded relevance for the ranker: the ordinal target the
+                # binary classifiers cannot see (win > podium > top-10 > rest;
+                # results data covers each stage's top 10)
+                "rank_grade": rank_grade(stage_positions.get(rider)),
             })
     return pd.DataFrame(rows)
+
+
+def rank_grade(position: float | None) -> int:
+    """Ordinal relevance grade for LambdaMART from a stage finish position."""
+    if position is None or pd.isna(position):
+        return 0
+    if position == 1:
+        return 3
+    if position <= 3:
+        return 2
+    if position <= 10:
+        return 1
+    return 0
 
 
 # ----------------------------------------------------------------------------
@@ -336,6 +374,56 @@ def evaluate_stage_model(matrix: pd.DataFrame, target: str) -> dict:
     }
 
 
+def make_stage_ranker() -> XGBRanker:
+    """LambdaMART over the same features, learning the per-stage ordering from
+    graded finish positions instead of a binary won/lost label. Tree budget
+    mirrors make_stage_model so the CV comparison is model-class against
+    model-class, not a tuning contest."""
+    return XGBRanker(
+        objective="rank:ndcg",
+        n_estimators=200, max_depth=3, learning_rate=0.05,
+        subsample=0.9, random_state=RANDOM_STATE)
+
+
+def _stage_qid(frame: pd.DataFrame) -> pd.Series:
+    """One ranking group per (year, stage); monotone when sorted by both."""
+    return frame["year"] * 100 + frame["stage"]
+
+
+def evaluate_stage_ranker(matrix: pd.DataFrame) -> dict:
+    """Same LOYO regime as evaluate_stage_model — held-out year, scored on
+    stages 9-21 — but the candidate is a ranker: one score per (stage, rider)
+    and top-1/top-3 read straight off the ordering. AUC of the scores against
+    the actual winners is rank-based and scale-free, so it is comparable with
+    the classifiers'; log loss is undefined for scores (not probabilities)."""
+    years = sorted(matrix["year"].unique())
+    top1_hits, top3_hits, n_stages = 0, 0, 0
+    all_scores, all_true = [], []
+    for held in years:
+        train = matrix[matrix["year"] != held].sort_values(["year", "stage"])
+        test = matrix[(matrix["year"] == held) & (matrix["stage"] > PIVOT_STAGE)]
+        model = make_stage_ranker()
+        model.fit(train[FEATURE_COLS], train["rank_grade"], qid=_stage_qid(train))
+        scores = model.predict(test[FEATURE_COLS])
+        test = test.assign(score=scores)
+        all_scores.extend(scores)
+        all_true.extend(test["won_stage"])
+        for s_no, grp in test.groupby("stage"):
+            actual = set(grp.loc[grp["won_stage"] == 1, "rider"])
+            if not actual:
+                continue
+            ranked = grp.sort_values("score", ascending=False)["rider"].tolist()
+            n_stages += 1
+            top1_hits += int(ranked[0] in actual)
+            top3_hits += int(bool(actual & set(ranked[:3])))
+    return {
+        "cv_top1_rate": top1_hits / n_stages,
+        "cv_top3_rate": top3_hits / n_stages,
+        "cv_auc": roc_auc_score(all_true, all_scores),
+        "n_eval_stages": n_stages,
+    }
+
+
 def make_gc_regressor() -> GradientBoostingRegressor:
     return GradientBoostingRegressor(
         n_estimators=80, max_depth=2, learning_rate=0.05, loss="huber",
@@ -431,6 +519,13 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
     gc_reg = joblib.load(models_dir / "gc_position_model.pkl")
     gc_cls = joblib.load(models_dir / "gc_podium_model.pkl")
 
+    # which model won the CV ranking contest at train time (see main)
+    selection_file = models_dir / "model_selection.json"
+    rank_source = "classifier"
+    if selection_file.exists():
+        rank_source = json.loads(selection_file.read_text()).get(
+            "stage_rank_source", "classifier")
+
     active = data.riders.query("status == 'active'")["rider"]
     matrix = build_stage_matrix(
         data, CURRENT_YEAR, upto_stage=PIVOT_STAGE, pool=active)
@@ -442,8 +537,17 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
     # exactly one rider wins each stage: normalise per stage
     matrix["win_probability"] = matrix.groupby("stage")[
         "win_probability_raw"].transform(lambda p: p / p.sum())
-    matrix["predicted_rank"] = matrix.groupby("stage")[
-        "win_probability"].rank(ascending=False, method="first").astype(int)
+    if rank_source == "ranker":
+        # ordering from LambdaMART; win/podium probabilities stay with the
+        # calibrated classifiers (a ranking score is not a probability)
+        ranker = joblib.load(models_dir / "stage_ranker_model.pkl")
+        matrix["rank_score"] = ranker.predict(matrix[FEATURE_COLS])
+        matrix["predicted_rank"] = matrix.groupby("stage")[
+            "rank_score"].rank(ascending=False, method="first").astype(int)
+    else:
+        matrix["predicted_rank"] = matrix.groupby("stage")[
+            "win_probability"].rank(ascending=False, method="first").astype(int)
+    print(f"  predicted_rank source: {rank_source}")
 
     stage_meta = data.stages[[
         "stage", "date", "start_location", "end_location"]].copy()
@@ -504,7 +608,6 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
         p_pod = max(row["podium_probability"] - p_win, 0)
         return p_win * pts[0] + p_pod * (pts[1] + pts[2]) / 2
 
-    preds_p = matrix.merge(data.stages[["stage"]], on="stage")
     preds_p = matrix.copy()
     preds_p["exp_points"] = preds_p.apply(expected_finish_points, axis=1)
     exp_green = preds_p.groupby("rider")["exp_points"].sum()
@@ -516,8 +619,58 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
         * KOM_WIN_POINTS[r["stage_type"]] * 0.4, axis=1)
     exp_kom = kom.groupby("rider")["exp_kom"].sum()
 
+    # Points the finish-position models cannot see: green points scored
+    # mid-stage at the intermediate sprint (20-17-…-1) and at the finish for
+    # places 4-15, KOM points collected from breakaways crossing climbs
+    # first. The aggregate is observable per rider: whatever part of the
+    # current points total the observed podium results cannot explain must
+    # have come from those sources. Project each rider's per-opportunity
+    # rate so far over the remaining stages (assumptions on the methodology
+    # page). Only riders in the current top-10 standings carry a residual —
+    # the classifications source publishes the top 10.
+    stages_2026 = data.stages
+    done_mask = stages_2026["completed"].astype(bool)
+    is_tt = stages_2026["stage_type"].str.contains("time trial", case=False)
+    # a mountain stage is ~half a green opportunity: its intermediate sprint
+    # (20 pts max) stays contestable, the bunch-finish points do not
+    green_unit = np.where(is_tt, 0.0,
+                          np.where(stages_2026["stage_type"] == "Mountain",
+                                   0.5, 1.0))
+    green_units_done = float(green_unit[done_mask].sum())
+    green_units_left = float(green_unit[~done_mask].sum())
+
+    pod_so_far = data.results[data.results["position"] <= 3]
+    green_attr = (pod_so_far.apply(
+        lambda r: FINISH_POINTS.get(r["stage_type"], [0, 0, 0])[int(r["position"]) - 1],
+        axis=1).groupby(pod_so_far["rider"]).sum()
+        if len(pod_so_far) else pd.Series(dtype=float))
+
+    kom_so_far = pod_so_far[pod_so_far["stage_type"].isin(KOM_WIN_POINTS)]
+    kom_attr = (kom_so_far.apply(
+        lambda r: KOM_WIN_POINTS[r["stage_type"]] * (1.0 if r["position"] == 1 else 0.4),
+        axis=1).groupby(kom_so_far["rider"]).sum()
+        if len(kom_so_far) else pd.Series(dtype=float))
+    kom_relevant = stages_2026["stage_type"].isin(KOM_WIN_POINTS)
+    kom_units_done = float((done_mask & kom_relevant).sum())
+    kom_units_left = float((~done_mask & kom_relevant).sum())
+
+    def other_points_forward(cls_name: str, attributed: pd.Series,
+                             units_done: float, units_left: float) -> pd.Series:
+        current = data.classifications.query(
+            "classification == @cls_name").set_index("rider")["points"]
+        current = pd.to_numeric(current, errors="coerce").fillna(0.0)
+        residual = (current - attributed.reindex(current.index)
+                    .fillna(0)).clip(lower=0)
+        return residual / max(units_done, 1.0) * units_left
+
+    green_other = other_points_forward(
+        "points", green_attr, green_units_done, green_units_left)
+    kom_other = other_points_forward(
+        "mountains", kom_attr, kom_units_done, kom_units_left)
+
     jerseys = []
-    for cls_name, expected in (("points", exp_green), ("mountains", exp_kom)):
+    for cls_name, expected, other in (("points", exp_green, green_other),
+                                      ("mountains", exp_kom, kom_other)):
         current = data.classifications.query(
             "classification == @cls_name").set_index("rider")["points"]
         riders_union = current.index.union(expected.index)
@@ -525,9 +678,14 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
             "classification": cls_name,
             "rider": riders_union,
             "current_points": [float(current.get(r, 0) or 0) for r in riders_union],
-            "projected_additional_points":
+            "projected_podium_points":
                 [round(float(expected.get(r, 0)), 1) for r in riders_union],
+            "projected_other_points":
+                [round(float(other.get(r, 0)), 1) for r in riders_union],
         })
+        proj["projected_additional_points"] = (
+            proj["projected_podium_points"]
+            + proj["projected_other_points"]).round(1)
         proj["projected_total_points"] = (
             proj["current_points"] + proj["projected_additional_points"]).round(1)
         proj["current_rank"] = (proj["current_points"]
@@ -577,10 +735,23 @@ def main() -> int:
         print("Cross-validating (leave-one-year-out)...")
         winner_metrics = evaluate_stage_model(matrix, "won_stage")
         podium_metrics = evaluate_stage_model(matrix, "top3_stage")
+        ranker_metrics = evaluate_stage_ranker(matrix)
         gc_reg_metrics, gc_cls_metrics = evaluate_gc_models(gc_matrix)
         print(f"  stage winner: top1 {winner_metrics['cv_top1_rate']:.0%}, "
               f"top3 {winner_metrics['cv_top3_rate']:.0%}, "
               f"AUC {winner_metrics['cv_auc']:.3f}")
+        print(f"  stage ranker: top1 {ranker_metrics['cv_top1_rate']:.0%}, "
+              f"top3 {ranker_metrics['cv_top3_rate']:.0%}, "
+              f"AUC {ranker_metrics['cv_auc']:.3f}")
+        # The published stage ordering goes to whichever model class ranks the
+        # held-out years better: top-1 hit rate first, top-3 breaks the tie.
+        # A full tie keeps the incumbent classifier (its probabilities are the
+        # calibrated output the rest of the pipeline consumes anyway).
+        use_ranker = (
+            (ranker_metrics["cv_top1_rate"], ranker_metrics["cv_top3_rate"])
+            > (winner_metrics["cv_top1_rate"], winner_metrics["cv_top3_rate"]))
+        rank_source = "ranker" if use_ranker else "classifier"
+        print(f"  → published stage ranking comes from the {rank_source}")
         print(f"  GC position: MAE {gc_reg_metrics['cv_mae_places']:.2f} places "
               f"(no-change baseline {gc_reg_metrics['baseline_mae_places']:.2f}), "
               f"R2 {gc_reg_metrics['cv_r2']:.2f}")
@@ -589,6 +760,10 @@ def main() -> int:
         models_dir.mkdir(parents=True, exist_ok=True)
         m_win = make_stage_model().fit(matrix[FEATURE_COLS], matrix["won_stage"])
         m_pod = make_stage_model().fit(matrix[FEATURE_COLS], matrix["top3_stage"])
+        sorted_matrix = matrix.sort_values(["year", "stage"])
+        m_rank = make_stage_ranker().fit(
+            sorted_matrix[FEATURE_COLS], sorted_matrix["rank_grade"],
+            qid=_stage_qid(sorted_matrix))
         m_gc = make_gc_regressor().fit(
             gc_matrix[GC_FEATURE_COLS], gc_matrix["final_rank"])
         m_gcp = RandomForestClassifier(
@@ -597,8 +772,16 @@ def main() -> int:
             gc_matrix[GC_FEATURE_COLS], gc_matrix["final_podium"])
         joblib.dump(m_win, models_dir / "stage_winner_model.pkl")
         joblib.dump(m_pod, models_dir / "stage_podium_model.pkl")
+        joblib.dump(m_rank, models_dir / "stage_ranker_model.pkl")
         joblib.dump(m_gc, models_dir / "gc_position_model.pkl")
         joblib.dump(m_gcp, models_dir / "gc_podium_model.pkl")
+        # --predict (possibly a separate invocation) reads this to know which
+        # model supplies predicted_rank; the CV numbers make the file auditable
+        (models_dir / "model_selection.json").write_text(json.dumps({
+            "stage_rank_source": rank_source,
+            "classifier_cv": {k: round(v, 4) for k, v in winner_metrics.items()},
+            "ranker_cv": {k: round(v, 4) for k, v in ranker_metrics.items()},
+        }, indent=2))
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         perf = pd.DataFrame([
@@ -610,6 +793,7 @@ def main() -> int:
              "log_loss": round(winner_metrics["cv_log_loss"], 4),
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": int(len(matrix)),
+             "provides_stage_ranking": not use_ranker,
              "headline": f"picks the actual winner {winner_metrics['cv_top1_rate']:.0%} of stages; winner in model top-3 {winner_metrics['cv_top3_rate']:.0%}"},
             {"model_name": "Stage podium", "algorithm": "GradientBoostingClassifier",
              "target": "P(rider finishes top 3)",
@@ -619,8 +803,24 @@ def main() -> int:
              "log_loss": round(podium_metrics["cv_log_loss"], 4),
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": int(len(matrix)),
+             "provides_stage_ranking": False,
              "headline": f"AUC {podium_metrics['cv_auc']:.2f} ranking top-3 finishers"},
-            {"model_name": "Final GC position", "algorithm": "GradientBoostingRegressor",
+            {"model_name": "Stage ranker", "algorithm": "XGBRanker (LambdaMART)",
+             "target": "per-stage ordering (graded win/podium/top-10)",
+             "top1_rate": round(ranker_metrics["cv_top1_rate"], 3),
+             "top3_rate": round(ranker_metrics["cv_top3_rate"], 3),
+             "auc": round(ranker_metrics["cv_auc"], 3),
+             "log_loss": None,
+             "mae_places": None, "baseline_mae_places": None, "r2": None,
+             "n_train": int(len(matrix)),
+             "provides_stage_ranking": use_ranker,
+             "headline": (
+                 f"ordinal-aware challenger: top-1 {ranker_metrics['cv_top1_rate']:.0%} "
+                 f"vs classifier {winner_metrics['cv_top1_rate']:.0%} — "
+                 + ("supplies the published stage ranking"
+                    if use_ranker else
+                    "classifier keeps the published ranking"))},
+            {"model_name": "Final GC position", "provides_stage_ranking": False, "algorithm": "GradientBoostingRegressor",
              "target": "final GC position of top-10 after stage 8",
              "top1_rate": None, "top3_rate": None,
              "auc": None, "log_loss": None,
@@ -630,7 +830,7 @@ def main() -> int:
              "n_train": int(gc_reg_metrics["n_rows"]),
              "headline": f"average error {gc_reg_metrics['cv_mae_places']:.1f} places "
                          f"(baseline: standings freeze at {gc_reg_metrics['baseline_mae_places']:.1f})"},
-            {"model_name": "GC podium", "algorithm": "RandomForestClassifier",
+            {"model_name": "GC podium", "provides_stage_ranking": False, "algorithm": "RandomForestClassifier",
              "target": "P(final GC podium)",
              "top1_rate": None, "top3_rate": None,
              "auc": round(gc_cls_metrics["cv_auc"], 3),
@@ -638,12 +838,12 @@ def main() -> int:
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": int(gc_cls_metrics["n_rows"]),
              "headline": f"AUC {gc_cls_metrics['cv_auc']:.2f} identifying final podium riders"},
-            {"model_name": "Jersey projections", "algorithm": "Expected-points simulation",
+            {"model_name": "Jersey projections", "provides_stage_ranking": False, "algorithm": "Expected-points simulation",
              "target": "green/polka-dot points at Paris",
              "top1_rate": None, "top3_rate": None, "auc": None, "log_loss": None,
              "mae_places": None, "baseline_mae_places": None, "r2": None,
              "n_train": None,
-             "headline": "current points + expected finish points from the two stage models"},
+             "headline": "current points + expected podium points from the stage models + each rider's observed intermediate-sprint/placing rate"},
         ])
         perf["cv_scheme"] = "leave-one-year-out CV, 2020-2025"
         perf["trained_at"] = now

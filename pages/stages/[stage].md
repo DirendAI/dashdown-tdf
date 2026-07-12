@@ -41,14 +41,18 @@ ORDER BY position
        empty_message="This stage hasn't been raced yet — see the model's predictions below." />
 
 ```sql gc_after connector=live_2026
-SELECT position, rider, team,
+SELECT position,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       team,
        ROUND(gap_seconds / 60.0, 2) AS minutes_behind
 FROM gc_evolution
 WHERE stage = CAST('${stage}' AS INTEGER)
 ORDER BY position
 ```
 
-<BarChart data={gc_after} x="rider" y="minutes_behind" horizontal
+<BarChart data={gc_after} x="rider_label" y="minutes_behind" horizontal
           title="GC after this stage — minutes behind yellow"
           empty_message="No GC standings yet for this stage." />
 
@@ -63,24 +67,40 @@ SELECT predicted_rank AS rank, rider, team, specialist,
 FROM stage_predictions
 WHERE stage = CAST('${stage}' AS INTEGER)
 ORDER BY predicted_rank
-LIMIT 15
+```
+
+```sql stage_prediction_top15 connector=predictions
+SELECT predicted_rank AS rank,
+       CASE WHEN POSITION(' ' IN rider) > 0
+            THEN SUBSTR(rider, 1, 1) || '. ' || SUBSTR(rider, POSITION(' ' IN rider) + 1)
+            ELSE rider END AS rider_label,
+       ROUND(win_probability * 100, 1) AS win_pct
+FROM stage_predictions
+WHERE stage = CAST('${stage}' AS INTEGER)
+  AND predicted_rank <= 15
+ORDER BY predicted_rank
 ```
 
 <Grid cols=2>
-<BarChart data={stage_prediction} x="rider" y="win_pct" horizontal
-          format="percent"
-          title="Win probability (top 15)"
+<BarChart data={stage_prediction_top15} x="rider_label" y="win_pct" horizontal
+          format="percent" height="420"
+          title="Win probability — top 15 favourites"
           empty_message="No prediction for this stage — it was already raced before the model's cutoff, or it is the team time trial." />
 
 <Table data={stage_prediction}
        format="win_pct=percent,podium_pct=percent"
-       sort="rank asc" title="The model's picks"
+       sort="rank asc" page-size="15" search limit="200"
+       title="The model's full ranking — every rider"
        empty_message="No prediction for this stage." />
 </Grid>
 
-<sub>ℹ️ Probabilities come from the stage-winner and stage-podium models —
-cross-validated accuracy and limitations are on the [methodology](/methodology)
-page. Raced stages show no prediction; the model only scores upcoming stages.</sub>
+<sub>ℹ️ The rank column is the LambdaMART ranking model's ordering (the best
+cross-validated at putting the actual winner on top); win/podium percentages
+are the calibrated probabilities from the stage-winner and stage-podium
+classifiers. The two can disagree — a rider in strong current form can
+out-rank one with a higher peak win probability. Accuracy numbers and
+limitations are on the [methodology](/methodology) page. Raced stages show no
+prediction; the model only scores upcoming stages.</sub>
 
 ---
 

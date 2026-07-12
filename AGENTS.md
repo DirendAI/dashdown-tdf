@@ -139,15 +139,20 @@ Connector in parentheses; table name = parquet file stem.
 | `final_classifications` (historical) | final top-10s per year | year, classification, rank, rider, team, points/gap_seconds |
 | `stage_predictions` (predictions) | 1 row per (remaining stage × active rider) | stage, rider, team, specialist, win_probability, podium_probability, predicted_rank |
 | `gc_forecast` (predictions) | current GC top 10 | rider, current_position, current_gap, predicted_final_position, podium_probability |
-| `jersey_projections` (predictions) | top-30 per jersey | classification, rider, current_points, projected_additional_points, projected_total_points, projected_rank |
+| `jersey_projections` (predictions) | top-30 per jersey | classification, rider, current_points, projected_podium_points, projected_other_points, projected_additional_points, projected_total_points, projected_rank |
 | `race_overview` / `model_performance` / `data_freshness` (main) | one-row/state tables | see files |
 
 ### Key Metrics
 
 - **win_probability**: normalised per stage so each stage's probabilities sum to 1
 - **podium_probability**: P(top-3 on the stage) — raw classifier output
+- **predicted_rank**: per-stage ordering from whichever of ranker/classifier
+  won the CV duel (currently the ranker) — can disagree with win_probability
 - **predicted_final_position**: rank of the GC position regressor's scores
-- **projected_total_points**: current jersey points + expected finish points
+- **projected_total_points**: current jersey points + expected podium points
+  (stage models) + the rider's observed rate of intermediate-sprint /
+  minor-placing / breakaway points (the part of their current total the
+  observed podiums can't explain, projected forward)
 
 ---
 
@@ -159,9 +164,15 @@ Connector in parentheses; table name = parquet file stem.
 |-------|------|--------|-----------|
 | `stage_winner` | Classification | won_stage (0/1) | GradientBoosting |
 | `stage_podium` | Classification | top3_stage (0/1) | GradientBoosting |
+| `stage_ranker` | Learning-to-rank | graded finish position per stage group | XGBRanker (LambdaMART) |
 | `gc_position` | Regression | final GC rank of top-10-after-8 | GradientBoosting |
 | `gc_podium` | Classification | final podium (0/1) | RandomForest |
 | jersey projections | Simulation | expected points | models 1+2 × UCI points scales |
+
+The stage ranker and stage-winner classifier compete in the same LOYO CV;
+the better ranker of held-out years (top-1, then top-3 hit rate) supplies
+`predicted_rank` (recorded in `models/model_selection.json`, re-decided every
+retrain). Probabilities always come from the calibrated classifiers.
 
 Honest leave-one-year-out CV metrics live in `data/model_performance.parquet`
 and are shown on the dashboard — do not replace them with aspirational numbers.
