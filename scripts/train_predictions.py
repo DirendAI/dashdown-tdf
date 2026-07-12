@@ -580,6 +580,12 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
     # exactly one rider wins each stage: normalise per stage
     matrix["win_probability"] = matrix.groupby("stage")[
         "win_probability_raw"].transform(lambda p: p / p.sum())
+    # store as float64: the ranker path yields float32, and float32 does not
+    # round-trip cleanly through DuckDB (ROUND(0.253f*100,1) prints
+    # 25.299999237… instead of 25.3), which leaks into any raw display / CSV
+    # export. float64 serialises with a shortest round-trip repr.
+    matrix["win_probability"] = matrix["win_probability"].astype("float64")
+    matrix["podium_probability"] = matrix["podium_probability"].astype("float64")
     print(f"  predicted_rank + probabilities source: {rank_source}")
 
     # keep predictions for raced stages 9+ (the stage pages show them next to
