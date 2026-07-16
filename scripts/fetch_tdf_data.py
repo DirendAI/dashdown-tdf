@@ -713,8 +713,12 @@ def build_2026(client: WikiClient, out: Path) -> dict:
         on="stage", how="left",
     )
 
-    # GC standings after the latest completed stage, enriched from startlist
-    gc_now = gc_evo[gc_evo["stage"] == last_completed].copy()
+    # GC standings after the latest completed stage, enriched from startlist.
+    # During the race a stage result is often published on Wikipedia before its
+    # GC table, so fall back to the latest stage that actually has GC data.
+    gc_stages = gc_evo.loc[gc_evo["stage"] <= last_completed, "stage"]
+    gc_stage = int(gc_stages.max()) if not gc_stages.empty else last_completed
+    gc_now = gc_evo[gc_evo["stage"] == gc_stage].copy()
     rider_info = riders[["rider", "age", "country", "young_rider_eligible"]]
     gc_now = gc_now.merge(rider_info, on="rider", how="left")
     gc_now["time"] = [
@@ -762,7 +766,8 @@ def build_2026(client: WikiClient, out: Path) -> dict:
     state = {
         "stages_completed": last_completed,
         "next_stage": last_completed + 1 if last_completed < 21 else None,
-        "yellow_jersey": gc_now.loc[gc_now["position"] == 1, "rider"].iloc[0],
+        "yellow_jersey": (yj.iloc[0] if not (yj := gc_now.loc[
+            gc_now["position"] == 1, "rider"]).empty else None),
         "green_jersey": jersey("points"),
         "polka_dot_jersey": jersey("mountains"),
         "white_jersey": jersey("young rider"),
