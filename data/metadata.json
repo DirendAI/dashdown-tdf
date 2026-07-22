@@ -1,13 +1,13 @@
 {
-  "last_refreshed": "2026-07-22T10:29:08+00:00",
+  "last_refreshed": "2026-07-22T17:24:22+00:00",
   "data_source": "Wikipedia (en) \u2014 parsed wikitext, cites letour.fr / Tissot Timing",
   "refresh_interval": "daily during the race",
-  "current_stage_completed": 16,
-  "next_stage": 17,
+  "current_stage_completed": 17,
+  "next_stage": 18,
   "total_stages": 21,
   "yellow_jersey": "Tadej Poga\u010dar",
   "green_jersey": "Mads Pedersen",
   "polka_dot_jersey": "Tadej Poga\u010dar",
   "white_jersey": "Isaac del Toro",
-  "note": "Live data - Tour de France 2026, stage 16 completed"
+  "note": "Live data - Tour de France 2026, stage 17 completed"
 }
