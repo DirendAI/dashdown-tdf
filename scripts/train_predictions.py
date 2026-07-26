@@ -655,14 +655,19 @@ def predict_2026(data: TDFData, models_dir: Path, out_dir: Path,
     # also carries raced stages 9+ (kept for the stage pages)
     remaining = set(data.stages.loc[~data.stages["completed"].astype(bool), "stage"])
     preds_p = matrix[matrix["stage"].isin(remaining)].copy()
-    preds_p["exp_points"] = preds_p.apply(expected_finish_points, axis=1)
+    # .apply(axis=1) on an empty frame returns a DataFrame, not a Series, and
+    # cannot be assigned to a column — late in the Tour these frames go empty
+    # (no KOM-relevant stage left, then no stage at all)
+    preds_p["exp_points"] = (preds_p.apply(expected_finish_points, axis=1)
+                             if len(preds_p) else 0.0)
     exp_green = preds_p.groupby("rider")["exp_points"].sum()
 
     kom = preds_p[preds_p["stage_type"].isin(KOM_WIN_POINTS)].copy()
-    kom["exp_kom"] = kom.apply(
+    kom["exp_kom"] = (kom.apply(
         lambda r: r["win_probability"] * KOM_WIN_POINTS[r["stage_type"]]
         + max(r["podium_probability"] - r["win_probability"], 0)
         * KOM_WIN_POINTS[r["stage_type"]] * 0.4, axis=1)
+        if len(kom) else 0.0)
     exp_kom = kom.groupby("rider")["exp_kom"].sum()
 
     # Points the finish-position models cannot see: green points scored
